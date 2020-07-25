@@ -1,0 +1,12 @@
+## 步骤
+
+### 1. 在 Typora 正文顶部引用
+
+```
+<script type="text/javascript" src="./export/jquery-3.4.1.js"></script>
+<script type="text/javascript" src="./export/html.js"></script>
+<link rel="stylesheet" type="text/css" href="./export/style.css">
+```
+
+### 2. 然后用typora 导出为 html
+
