@@ -1062,7 +1062,7 @@ rules: [
 
 还有一种行内 loader，即我们在应用代码中引用依赖时直接声明使用的 loader，如 `const json = require('json-loader!./file.json')` 这种。不建议在应用开发中使用这种 loader，后续我们还会再提到。
 
-顾名思义，所有的 loader 按照**前置(pre) -> 行内 -> 普通(normal) -> 后置(postloader)**的顺序执行。所以当我们要确保 eslint-loader 在 babel-loader 之前执行时，可以如下添加 `enforce` 配置：
+顾名思义，所有的 loader 按照**前置(`pre`) -> 普通(`normal`) -> 行内(`inline`) -> 后置(`postloader`)**的顺序执行。所以当我们要确保 `eslint-loader` 在 babel-loader 之前执行时，可以如下添加 `enforce` 配置：
 
 ```js
 rules: [
