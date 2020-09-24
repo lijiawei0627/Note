@@ -435,7 +435,7 @@ function foo() {
   }; 
 } 
  
-- var f = foo.call({id: 1}); 
+var f = foo.call({id: 1}); 
  
 var t1 = f.call({id: 2})()(); // id: 1 
 var t2 = f().call({id: 3})(); // id: 1
@@ -541,10 +541,10 @@ Array(3) // [, , ,]
 const target = { a: 1 }; 
  
 const source1 = { b: 2 }; 
-const source2 = { c: 3 }; 
+const source2 = { c: 3, b:4 }; 
  
 Object.assign(target, source1, source2); 
-target // {a:1, b:2, c:3} 
+target // {a:1, b:4, c:3} 
 ```
 `Object.assign`方法的第一个参数是目标对象，后面的参数都是源对象。
 
@@ -1365,7 +1365,7 @@ let bar = await barPromise;
 
 **`ES6` 的类，完全可以看作构造函数的另一种写法。**
 
-构造函数的`prototype`属性，在 ES6 的“类”上面继续存在。事实上，类的所有方法都定义在类的`prototype`属性上面。
+构造函数的`prototype`属性，在 `ES6` 的“类”上面继续存在。事实上，类的所有方法都定义在类的`prototype`属性上面。
 
 ```javascript
 class Point {

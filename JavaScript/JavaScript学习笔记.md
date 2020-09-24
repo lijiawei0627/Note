@@ -1320,7 +1320,7 @@ console.log(div.length)  // 3
 ## 基于元素节点的遍历
 
 * `parentElement`  返回当前元素的父元素节点（最顶端是html）
-* `children`  只返回当前元素的元素字节点
+* `children`  只返回当前元素的元素子节点
 * `firstElementChild`   返回的是第一个元素节点
 * `lastElementChild`    返回的是最后一个元素节点
 * `nextElementSibling` 后一个兄弟元素节点
