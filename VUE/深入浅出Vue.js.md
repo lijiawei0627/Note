@@ -311,7 +311,7 @@ function defineReactive (data, key, val) {
 
 * 所谓的依赖,其实就是Watcher。触发的getter才会收集依赖,哪个Watcher触发了getter，就把哪个Watcher收集到Dep中。当数据发生变化时，会循环依赖列表，把所有的Watcher都通知一遍。变化通知到外界后，可能会触发视图更新，也有可能触发用户的某个回调函数等（watch、computed方法）。
 
-![image-20191129171637510](http://img.lijiawei0627.xyz/img/image-20191129171637510.png)
+![image-20191129171637510](D:\Note\image\image-20191129171637510.png)
 
 # 二、Array的变化侦测
 
@@ -319,7 +319,7 @@ function defineReactive (data, key, val) {
 
 在`ES6`之前，`JavaScript`并没有给数组提供元编程能力，也就是没有提供可以拦截原型方法的能力，但是我们可以通过自定义去覆盖原生的原型方法.
 
-![image-20191129160537153](http://img.lijiawei0627.xyz/img/image-20191129160537153.png)
+![image-20191129160537153](D:\Note\image\image-20191129160537153.png)
 
 每当使用Array原型上的方法操作数组时，其实执行的都是拦截器中提供的方法，比如`push`方法。然后在拦截器中使用原生Array的原型方法去操作数组。
 
@@ -363,7 +363,7 @@ export class Observer {
 
 如果data中有属性是数组，将修改后可以截获响应的数组方法替换掉该数组的原型中的原生方法，达到监听数组数据变化响应的效果。这里如果当前浏览器支持`__proto__`属性，则直接覆盖当前数组对象原型，如果不支持该属性，则直接将`arrayMethods`身上的方法设置到被侦测的数组身上。
 
-![image-20191129161928627](http://img.lijiawei0627.xyz/img/image-20191129161928627.png)
+![image-20191129161928627](D:\Note\image\image-20191129161928627.png)
 
 >  从`ECMAScript 2015` 开始，JavaScript 获得了 [`Proxy`](https://developer.mozilla.org/zh-CN/docs/Web/JavaScript/Reference/Global_Objects/Proxy) 和 [`Reflect`](https://developer.mozilla.org/zh-CN/docs/Web/JavaScript/Reference/Global_Objects/Reflect) 对象的支持，允许你拦截并定义基本语言操作的自定义行为（例如，属性查找，赋值，枚举，函数调用等）。借助这两个对象，你可以在 JavaScript 元级别进行编程。
 
@@ -617,7 +617,7 @@ export default class Watcher {
 
 ### `Watcher与Dep`的关系
 
-![image-20191206210637724](http://img.lijiawei0627.xyz/img/image-20191206210637724.png)
+![image-20191206210637724](D:\Note\image\image-20191206210637724.png)
 
 为什么是多对多的关系。Watcher每次只读一个数据，不应该只有`Dep`吗？
 
@@ -981,13 +981,13 @@ export const createEmptyVNode = (text: string = '') => {
 
 例如：**当新旧两个节点是同一个文本节点，但两个节点的文本不一样时，我们需要重新设置`oldVnode`在视图中所对应的真实DOM节点的文本。**
 
-![img](http://img.lijiawei0627.xyz/img/72BCE6EDA6D6F6E97ADCAFF10D37E29A.jpg)
+![img](D:\Note\image\72BCE6EDA6D6F6E97ADCAFF10D37E29A.jpg)
 
 ### 小结
 
 **通过前面的介绍，可以发现整个patch的过程并不复杂。当`oldVnode`不存在时,直接使用`vnode`渲染视图；当`oldVnode`和`vnode`都存在但并不是同一个节点时，使用`vnode`创建的`DOM`元素替换旧的DOM元素；当`oldVnode`和`vnode`是同一个节点时，使用更详细的对比操作对真实的DOM节点进行更新。**
 
-![image-20200404115702452](http://img.lijiawei0627.xyz/img/image-20200404115702452.png)
+![image-20200404115702452](D:\Note\image\image-20200404115702452.png)
 
 ## 创建节点
 
@@ -997,7 +997,7 @@ export const createEmptyVNode = (text: string = '') => {
 
 **创建子节点时，子节点的父节点就是当前刚创建出来的这个节点，所以节点被创建后，会被插人当前节点的下面。当所有子节点都创建完并插入到当前节点中之后，我们把当前节点插入到指定父节点的下面。如果这个指定的父节点已经被渲染到视图中，那么将当前这个节点插入进去之后，会将当前节点(包括其子节点)渲染到视图中。**
 
-![image-20200404121724353](http://img.lijiawei0627.xyz/img/image-20200404121724353.png)
+![image-20200404121724353](D:\Note\image\image-20200404121724353.png)
 
 ## 删除节点
 
@@ -1049,7 +1049,7 @@ function removeVnode(el) {
 
   直接将`oldVnode`内容清空
 
-![image-20191207162309841](http://img.lijiawei0627.xyz/img/image-20191207162309841.png)
+![image-20191207162309841](D:\Note\image\image-20191207162309841.png)
 
 ## 更新子节点
 
@@ -1216,7 +1216,7 @@ parseHTML(template, {
 
 **构建`AST`层级关系非常简单，只需要用一个栈来记录层级关系即可，这个层级关系也可以理解为`DOM`的深度。基于`HTML`解析器的逻辑，我们可以在每次触发钩子函数`start`时，把当前正在构建的节点压入栈中即可；每当触发`end`钩子函数，就从栈中弹出一个节点。**
 
-![image-20200404144819518](http://img.lijiawei0627.xyz/img/image-20200404144819518.png)
+![image-20200404144819518](D:\Note\image\image-20200404144819518.png)
 
 #### 文本解析器
 
@@ -1238,7 +1238,7 @@ parseHTML(template, {
 
 **HTML解析器在解析文本时，并不会区分文本是否是带变量的文本。如果是纯文本，不需要进行任何处理；但如果是带变量的文本，那么需要使用文本解析器进一步解析。因为带变量的文本在使用虚拟`DOM`进行渲染时，需要将变量替换成变量中的值。**
 
-![image-20200404153446796](http://img.lijiawei0627.xyz/img/image-20200404153446796.png)
+![image-20200404153446796](D:\Note\image\image-20200404153446796.png)
 
 **`_s`其实是下面这个`toSting`函数的别名。**
 
@@ -1394,7 +1394,7 @@ function markStaticRoots (node: ASTNode, isInFor: boolean) {
 
 **我们从上往下找，找到的第一个静态节点一定是静态根节点，而它的所有子节点一定也是静态节点。**
 
-![image-20200404161703015](http://img.lijiawei0627.xyz/img/image-20200404161703015.png)
+![image-20200404161703015](D:\Note\image\image-20200404161703015.png)
 
 **静态根节点至少要有一个子节点，并且该子节点不能是静态文本，否则优化成本将超过收益。**
 
@@ -2381,9 +2381,9 @@ Vue.version = '2.6.1'
 
 # 九、生命周期
 
-![image-20200407091443320](http://img.lijiawei0627.xyz/img/image-20200407091443320.png)
+![image-20200407091443320](D:\Note\image\image-20200407091443320.png)
 
-![image-20200407091451002](http://img.lijiawei0627.xyz/img/image-20200407091451002.png)
+![image-20200407091451002](D:\Note\image\image-20200407091451002.png)
 
 ## 初始化阶段
 
@@ -2560,7 +2560,7 @@ function initProps (vm: Component, propsOptions: Object) {
 
 **简单来说，计算属性会通过 `Watcher`来观察它所用到的所有属性的变化，当这些属性发生变化时，计算属性会将自身的 `Watcher的 dirty`属性设置为true，说明自身的返回值变了。**
 
-![image-20200407110112103](http://img.lijiawei0627.xyz/img/image-20200407110112103.png)
+![image-20200407110112103](D:\Note\image\image-20200407110112103.png)
 
 ```javascript
 // 伪代码

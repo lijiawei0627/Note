@@ -60,7 +60,7 @@ box-shadow: 5px 5px 3px 4px rgba(0, 0, 0, .4) inset;  // 默认为ouset外阴影
 
 background 简写属性在一个声明中可以设置所有的背景属性。
 
-![image-20200306153708615](http://img.lijiawei0627.xyz/img/image-20200306153708615.png)
+![image-20200306153708615](D:\Note\image\image-20200306153708615.png)
 
 ## 背景图片及其平铺
 
@@ -184,7 +184,7 @@ div:hover {
 }
 ```
 
-![image-20200306174554278](http://img.lijiawei0627.xyz/img/image-20200306174554278.png)
+![image-20200306174554278](D:\Note\image\image-20200306174554278.png)
 
 # 六、变形`transform`
 
@@ -247,7 +247,7 @@ y上面为负，下面为正；
 
 z里面为负，外面为正。
 
-![image-20200307135502434](http://img.lijiawei0627.xyz/img/image-20200307135502434.png)
+![image-20200307135502434](D:\Note\image\image-20200307135502434.png)
 
 ### `rotate3d`
 
@@ -261,7 +261,7 @@ transform: rotateZ(140deg);
 transform: rotate3d(1, 1, 1, 90deg);
 ```
 
-![image-20200307141227526](http://img.lijiawei0627.xyz/img/image-20200307141227526.png)
+![image-20200307141227526](D:\Note\image\image-20200307141227526.png)
 
 ### `perspective`透视效果
 
@@ -269,7 +269,7 @@ transform: rotate3d(1, 1, 1, 90deg);
 
 perspective一般作为一个属性，设置给父元素，作用于所有3D转换的子元素
 
-![image-20200307142017013](http://img.lijiawei0627.xyz/img/image-20200307142017013.png)
+![image-20200307142017013](D:\Note\image\image-20200307142017013.png)
 
 ```css
 body {
