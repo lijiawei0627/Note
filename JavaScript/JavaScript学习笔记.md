@@ -175,7 +175,7 @@ obj.__proto__ === Object.prototype // true
 obj.constructor === Object
 ```
 
-![img](D:\Note\image\239adedfdbece29391d2d7c37b01a7e9.jpg)
+![img](../image/239adedfdbece29391d2d7c37b01a7e9.jpg)
 
 **2、每个函数都包含两个属性：length 和 prototype。另外具名函数还拥有name属性。其中，length属性表示函数希望接收的命名参数的个数，name属性返回函数名，且不可修改**
 
@@ -620,7 +620,7 @@ alert(obj) // world
 
 大部分对象自身都会带有一个`__proto__`和`constructor`属性(除了create(null)创建的空对象和`Object.prototype`以外)，其中constructor继承自该对象构造函数。两者只是指向于同一个对象(引用)。当改变两者任意一个的指针指向，对另外一个变量无影响。
 
-![img](D:\Note\image\239adedfdbece29391d2d7c37b01a7e9-1577265170741.jpg)
+![img](../image/239adedfdbece29391d2d7c37b01a7e9-1577265170741.jpg)
 
 ## `instanceof`
 
@@ -1356,7 +1356,7 @@ console.log(div.length)  // 3
 
 document ——> `HTMLDocument.prototype` ——> `Document.prototype`
 
-![image-20200620104049609](D:\Note\image\image-20200620104049609.png)
+![image-20200620104049609](../image/image-20200620104049609.png)
 
 ## DOM基本操作
 
@@ -1505,7 +1505,7 @@ console.log (doubled) //=> [2,4,6,8,10]
 
 例题：
 
-![img](D:\Note\image\fa7e0f1ed077430c8bf765ce121bbc14.png)
+![img](../image/fa7e0f1ed077430c8bf765ce121bbc14.png)
 
 这个程序的打印顺序为1、9、5、0、6、2、7、4、8、3
 

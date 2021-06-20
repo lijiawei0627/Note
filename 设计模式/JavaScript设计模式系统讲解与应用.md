@@ -8,7 +8,7 @@
 
 演示，代码和类图结合
 
-![image-20200506103014435](D:\Note\image\image-20200506103014435.png)
+![image-20200506103014435](../image/image-20200506103014435.png)
 
 ```javascript
 class People {
@@ -57,7 +57,7 @@ b.saySomething()
 
 下面为代码对应的类图
 
-![image-20200506105123431](D:\Note\image\image-20200506105123431.png)
+![image-20200506105123431](../image/image-20200506105123431.png)
 
 # 二、设计原则
 
@@ -217,7 +217,7 @@ trip.start()
 trip.end()
 ```
 
-![image-20200506121907588](D:\Note\image\image-20200506121907588.png)
+![image-20200506121907588](../image/image-20200506121907588.png)
 
 ### 面试题2
 
@@ -228,7 +228,7 @@ trip.end()
 * 车辆出来时，出口显示器显示车牌号和停车时长
 * 画出`UML`类图
 
-![image-20200506135914507](D:\Note\image\image-20200506135914507.png)
+![image-20200506135914507](../image/image-20200506135914507.png)
 
 ```javascript
 // 车辆
@@ -388,7 +388,7 @@ p.init()
 p.fun1()
 ```
 
-![image-20200506145338842](D:\Note\image\image-20200506145338842.png)
+![image-20200506145338842](../image/image-20200506145338842.png)
 
 ## 场景
 
@@ -396,15 +396,15 @@ p.fun1()
 
 * `React.createElement`
 
-  ![image-20200506150758593](D:\Note\image\image-20200506150758593.png)
+  ![image-20200506150758593](../image/image-20200506150758593.png)
 
-![image-20200506150811203](D:\Note\image\image-20200506150811203.png)
+![image-20200506150811203](../image/image-20200506150811203.png)
 
-![image-20200506150852375](D:\Note\image\image-20200506150852375.png)
+![image-20200506150852375](../image/image-20200506150852375.png)
 
 * `Vue`异步组件
 
-  ![image-20200506151328467](D:\Note\image\image-20200506151328467.png)
+  ![image-20200506151328467](../image/image-20200506151328467.png)
 
 ## 设计原则验证
 
@@ -492,7 +492,7 @@ let res = target.request()
 console.log(res)
 ```
 
-![image-20200506155906978](D:\Note\image\image-20200506155906978.png)
+![image-20200506155906978](../image/image-20200506155906978.png)
 
 ## 场景
 
@@ -522,7 +522,7 @@ console.log(res)
 
 ## 演示
 
-![image-20200506162005164](D:\Note\image\image-20200506162005164.png)
+![image-20200506162005164](../image/image-20200506162005164.png)
 
 ```javascript
 class Circle {
@@ -620,7 +620,7 @@ dec.draw()
 
 ## 演示
 
-![image-20200507091902675](D:\Note\image\image-20200507091902675.png)
+![image-20200507091902675](../image/image-20200507091902675.png)
 
 ```javascript
 class ReadImg {
@@ -671,7 +671,7 @@ proxyImg.display()
 * 为子系统中的一组接口提供了一个高层接口
 * 使用者使用这个高层接口
 
-![image-20200507100110086](D:\Note\image\image-20200507100110086.png)
+![image-20200507100110086](../image/image-20200507100110086.png)
 
 ### 示例
 
@@ -761,17 +761,17 @@ s.setState(1)
 
 * 网页事件绑定
 
-  ![image-20200507113818040](D:\Note\image\image-20200507113818040.png)
+  ![image-20200507113818040](../image/image-20200507113818040.png)
 
 * `Promise`
 
 * `JQuery callbacks`
 
-  ![image-20200507114410390](D:\Note\image\image-20200507114410390.png)
+  ![image-20200507114410390](../image/image-20200507114410390.png)
 
 * `nodejs`自定义事件
 
-  ![image-20200507114450619](D:\Note\image\image-20200507114450619.png)
+  ![image-20200507114450619](../image/image-20200507114450619.png)
 
 # 十、迭代器模式
 
@@ -782,7 +782,7 @@ s.setState(1)
 
 ## 演示
 
-![image-20200507133405358](D:\Note\image\image-20200507133405358.png)
+![image-20200507133405358](../image/image-20200507133405358.png)
 
 ## 场景
 
@@ -808,7 +808,7 @@ s.setState(1)
 
 ## 演示
 
-![image-20200508091830796](D:\Note\image\image-20200508091830796.png)
+![image-20200508091830796](../image/image-20200508091830796.png)
 
 ```javascript
 // 状态（红灯、绿灯、黄灯）
@@ -860,9 +860,9 @@ console.log(context.getState()) // 打印状态
   * 如交通号灯
   * 使用开源`lib：javascript-state-machine`
 
-  ![image-20200508094017466](D:\Note\image\image-20200508094017466.png)
+  ![image-20200508094017466](../image/image-20200508094017466.png)
 
-  ![image-20200508094052724](D:\Note\image\image-20200508094052724.png)
+  ![image-20200508094052724](../image/image-20200508094052724.png)
 
 * 写一个简单的`Promise`
 
@@ -906,9 +906,9 @@ x.say()
 
 ### 演示
 
-![image-20200508111811452](D:\Note\image\image-20200508111811452.png)
+![image-20200508111811452](../image/image-20200508111811452.png)
 
-![image-20200508111820923](D:\Note\image\image-20200508111820923.png)
+![image-20200508111820923](../image/image-20200508111820923.png)
 
 ```javascript
 class Color {
@@ -942,7 +942,7 @@ triangel.draw()
 * 生成树形结构，表示“整体-部分”关系
 * 让整体和部分都具有一致的操作方式
 
-![image-20200508112402682](D:\Note\image\image-20200508112402682.png)
+![image-20200508112402682](../image/image-20200508112402682.png)
 
 ### 演示
 
@@ -1122,11 +1122,11 @@ a.handle()
 
 ### 概念
 
-![image-20200508122301641](D:\Note\image\image-20200508122301641.png)
+![image-20200508122301641](../image/image-20200508122301641.png)
 
 ### 演示
 
-![image-20200508122331943](D:\Note\image\image-20200508122331943.png)
+![image-20200508122331943](../image/image-20200508122331943.png)
 
 ## 备忘录模式
 
@@ -1138,9 +1138,9 @@ a.handle()
 
 ### 演示
 
-![image-20200508122914892](D:\Note\image\image-20200508122914892.png)
+![image-20200508122914892](../image/image-20200508122914892.png)
 
-![image-20200508123149170](D:\Note\image\image-20200508123149170.png)
+![image-20200508123149170](../image/image-20200508123149170.png)
 
 ### 设计原则验证
 
@@ -1151,13 +1151,13 @@ a.handle()
 
 ### 概念
 
-![image-20200508123457009](D:\Note\image\image-20200508123457009.png)
+![image-20200508123457009](../image/image-20200508123457009.png)
 
 ### 演示
 
-![image-20200508123539128](D:\Note\image\image-20200508123539128.png)
+![image-20200508123539128](../image/image-20200508123539128.png)
 
-![image-20200508123753780](D:\Note\image\image-20200508123753780.png)
+![image-20200508123753780](../image/image-20200508123753780.png)
 
 ### 设计原则验证
 

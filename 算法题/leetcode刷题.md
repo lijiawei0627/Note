@@ -722,7 +722,7 @@ var spiralOrder = function(matrix) {
 
 ## 答案一：动态规划
 
-![image-20200512171622502](D:\Note\image\image-20200512171622502.png)
+![image-20200512171622502](../image/image-20200512171622502.png)
 
 ### `top down`
 
@@ -1447,7 +1447,7 @@ var canCompleteCircuit = function(gas, cost) {
 
 ### 解法二：O(n)
 
-![image-20200518093856180](D:\Note\image\image-20200518093856180.png)
+![image-20200518093856180](../image/image-20200518093856180.png)
 
 1. 创建一个`sum`变量用来存储绕环路行驶一周之后的所剩油量
 2. 创建一个数组`result`用来记录当前下标对应的当前加油站可加汽油与行驶到下一个加油站所要消耗汽油的差值
@@ -2611,7 +2611,7 @@ var rotateString = function(A, B) {
 
 **主要是注意两个矩形的边界**
 
-![image-20200528111238803](D:\Note\image\image-20200528111238803.png)
+![image-20200528111238803](../image/image-20200528111238803.png)
 
 ```javascript
 var isRectangleOverlap = function(rec1, rec2) {
