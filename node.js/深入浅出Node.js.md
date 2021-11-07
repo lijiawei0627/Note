@@ -1328,8 +1328,10 @@ if (!pool || pool.length - pool.used < kMinPoolSpace) {
 ## 9.1 服务模型的变迁
 ### 9.1.1 石器时代：同步
 **最早的服务器，其执行模型是同步的，它的服务模式是一次只为一个请求服务，所有请求都得按次序等待服务**。这意味除了当前的请求被处理外，其余请求都处于耽误的状态。它的处理能力相当低下，假设每次响应服务耗用的时间稳定为N秒，这类服务的QPS为1/N。
+
 ### 9.1.2 青铜时代：复制进程
 **为了解决同步架构的并发问题，一个简单的改进是通过进程的复制同时服务更多的请求和用户**。在进程复制的过程中，需要复制进程内部的状态，对于每个连接都进行这样的复制的话，相同的状态将会在内存中存在很多份，造成浪费。并且这个过程由于要复制较多的数据，启动是较为缓慢的。
+
 ### 9.1.3 白银时代：多线程
 **为了解决进程复制中的浪费问题，多线程被引入服务模型，让一个线程服务一个请求。线程相对进程的开销要小许多，并且线程之间可以共享数据，内存浪费的问题可以得到解决，并且利用线程池可以减少创建和销毁线程的开销**。但是因为每个线程都拥有自己独立的堆栈，这个堆栈都需要占用一定的内存空间。另外，由于一个CPU核心在一个时刻只能做一件事情，操作系统只能通过将CPU切分为时间片的方法，让线程可以较为均匀地使用CPU资源，但是操作系统内核在切换线程的同时也要切换线程的上下文，当线程数量过多时，时间将会被耗用在上下文切换中。所以在大并发量时，多线程结构还是无法做到强大的伸缩性。
 ### 9.1.4 黄金时代：事件驱动
@@ -1856,3 +1858,86 @@ export NODE_CLUSTER_SCHED_POLICY=none
 
 > 这种推送机制**如果按进程间信号传递，在跨多台服务器时会无效，是故可以考虑采用TCP或UDP的方案**。进程在启动时从通知服务处除了读取第一次数据外，还将进程信息注册到通知服务处。一旦通过轮询发现有数据更新后，根据注册信息，将更新后的数据发送给工作进程。由于不涉及太多进程去向同一地方进行状态查询，状态响应处的压力不至于太过巨大，单一的通知服务轮询带来的压力并不大，所以可以将轮询时间调整得较短，一旦发现更新，就能实时地推送到各个子进程中。
 
+## 9.4 Cluster模块
+
+**在v0.8版本之前，实现多进程架构必须通过child_process来实现**，要创建单机Node集群，由于有这么多细节需要处理，对普通工程师而言是一件相对较难的工作，于是v0.8时直接引入了cluster模块，用以解决多核CPU的利用率问题，同时也提供了较完善的API，用以处理进程的健壮性问题。
+
+对于之前提到的创建Node进程集群，cluster实现起来也是很轻松的事情，如下所示：
+
+```javascript
+// cluster.js 
+var cluster = require('cluster'); 
+cluster.setupMaster({ 
+ exec: "worker.js" 
+}); 
+var cpus = require('os').cpus(); 
+for (var i = 0; i < cpus.length; i++) { 
+ cluster.fork(); 
+}
+```
+
+执行`node cluster.js`将会得到与前文创建子进程集群的效果相同。就官方的文档而言，它更喜欢如下的形式作为示例：
+
+```javascript
+var cluster = require('cluster'); 
+var http = require('http'); 
+var numCPUs = require('os').cpus().length; 
+if (cluster.isMaster) { 
+ // Fork workers 
+ for (var i = 0; i < numCPUs; i++) { 
+   cluster.fork(); 
+ } 
+ cluster.on('exit', function(worker, code, signal) { 
+   console.log('worker ' + worker.process.pid + ' died'); 
+ }); 
+} else { 
+ // Workers can share any TCP connection 
+  // In this case its a HTTP server 
+ http.createServer(function(req, res) { 
+   res.writeHead(200); 
+   res.end("hello world\n"); 
+ }).listen(8000); 
+}
+```
+
+在进程中判断是主进程还是工作进程，主要取决于环境变量中是否有NODE_UNIQUE_ID，如下所示：
+
+```javascript
+cluster.isWorker = ('NODE_UNIQUE_ID' in process.env); 
+cluster.isMaster = (cluster.isWorker === false);
+```
+
+但是官方示例中忽而判断cluster.isMaster、忽而判断cluster.isWorker，对于代码的可读性十分差。我建议用cluster.setupMaster()这个API，将主进程和工作进程从代码上完全剥离，如同send()方法看起来直接将服务器从主进程发送到子进程那样神奇，剥离代码之后，甚至都感觉不到主进程中有任何服务器相关的代码。
+
+通过cluster.setupMaster()创建子进程而不是使用cluster.fork()，程序结构不再凌乱，逻辑分明，代码的可读性和可维护性较好。
+
+### 9.4.1 Cluster工作原理
+
+事实上**cluster模块就是child_process和net模块的组合应用**。cluster启动时，如同在9.2.3节里的代码一样，它**会在内部启动TCP服务器，在cluster.fork()子进程时，将这个TCP服务器端socket的文件描述符发送给工作进程**。**如果进程是通过cluster.fork()复制出来的，那么它的环境变量里就存在NODE_UNIQUE_ID，如果工作进程中存在listen()侦听网络端口的调用，它将拿到该文件描述符，通过SO_REUSEADDR端口重用，从而实现多个子进程共享端口**。对于普通方式启动的进程，则不存在文件描述符传递共享等事情。
+
+**在cluster内部隐式创建TCP服务器的方式对使用者来说十分透明，但也正是这种方式使得它无法如直接使用child_process那样灵活。在cluster模块应用中，一个主进程只能管理一组工作进程**，如图所示。
+
+![image-20210821140057045](../image/image-20210821140057045.png)
+
+**对于自行通过child_process来操作时，则可以更灵活地控制工作进程，甚至控制多组工作进程。其原因在于自行通过child_process操作子进程时，可以隐式地创建多个TCP服务器，使得子进程可以共享多个的服务器端socket**，如图所示。
+
+![image-20210821140156018](../image/image-20210821140156018.png)
+
+### 9.4.2 Cluster事件
+
+对于健壮性处理，cluster模块也暴露了相当多的事件：
+
+* fork：复制一个工作进程后触发该事件。
+* online：复制好一个工作进程后，工作进程主动发送一条online消息给主进程，主进程收到消息后，触发该事件。
+* listening：工作进程中调用listen()（共享了服务器端Socket）后，发送一条listening消息给主进程，主进程收到消息后，触发该事件。
+* disconnect：主进程和工作进程之间IPC通道断开后会触发该事件。
+* exit：有工作进程退出时触发该事件。
+* setup:cluster.setupMaster()执行后触发该事件。
+
+这些事件大多跟child_process模块的事件相关，在进程间消息传递的基础上完成的封装。这些事件对于增强应用的健壮性已经足够了。
+
+### 9.5 总结
+
+**尽管Node从单线程的角度来讲它有够脆弱的：既不能充分利用多核CPU资源，稳定性也无法得到保障。但是群体的力量是强大的，通过简单的主从模式，就可以将应用的质量提升一个档次。在实际的复杂业务中，我们可能要启动很多子进程来处理任务，结构甚至远比主从模式复杂，但是每个子进程应当是简单到只做好一件事，然后通过进程间通信技术将它们连接起来即可。这符合Unix的设计理念，每个进程只做一件事，并做好一件事，将复杂分解为简单，将简单组合成强大。**
+
+**尽管通过child_process模块可以大幅提升Node的稳定性，但是一旦主进程出现问题，所有子进程将会失去管理。在Node的进程管理之外，还需要用监听进程数量或监听日志的方式确保整个系统的稳定性，即使主进程出错退出，也能及时得到监控警报，使得开发者可以及时处理故障。**
