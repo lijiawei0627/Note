@@ -2789,6 +2789,8 @@ function handleSetupResult(instance, setupResult) {
 
 可以看到，当 `setupResult` 是一个对象的时候，我们把它变成了响应式并赋值给 `instance.setupState`，这样在模板渲染的时候，依据前面的代理规则，`instance.ctx` 就可以从 `instance.setupState` 上获取到对应的数据，这就在 `setup` 函数与模板渲染间建立了联系。
 
+> `setup`函数内返回的结果如果是对象，在`handleSteupResult`内将结果挂在实例上时是会被`reactive`包一层的：`instance.setupState=reactive(setupResult)`。所以在`setup`内定义的变量，即使不主动`reactive`，只要返回给`render`使用到，就算在`setup`内设置为基本值，内部还是会做响应式处理。
+
 另外 `setup` 不仅仅支持返回一个对象，也可以返回一个函数作为组件的渲染函数。我们可以改写前面的示例，来看一下这时的情况：
 
 ```javascript
@@ -2974,7 +2976,915 @@ function applyOptions(instance, options, deferredData = [], deferredWatch = [], 
 3. `setupStatefulComponent `函数负责处理的是 创建渲染上下文代理、判断处理 `setup` 函数和完成组件实例设置这种比较宏观的职责，对于` setup，setupStatefulComponent `只关心执行结果即可，具体处理setup结果的职责应该交给其他函数——`callWithErrorHandling`。否则会显得职责分配混乱
 4. 封装的逻辑，保留了复用潜力，防止一次改到处改。
 
-## 3.2 响应式：响应式内部的实现原理是怎样的？（上）
+## 3.2 响应式：响应式内部的实现原理是怎样的？
+
+ 上面了解了`Composition API` 的核心 `setup` 函数的实现，在 `setup` 函数中，可以多次使用一些 `API `让数据变成响应式，那么现在就来深入学习响应式内部的实现原理。
+
+**除了组件化，`Vue.js` 另一个核心设计思想就是响应式。它的本质是当数据变化后会自动执行某个函数，映射到组件的实现就是，当数据变化后，会自动触发组件的重新渲染。响应式是 `Vue.js` 组件化更新渲染的一个核心机制。**
+
+###  `Vue.js 2.x` 响应式实现原理
+
+在介绍 `Vue.js 3.0` 响应式实现之前，可以先来回顾一下 `Vue.js 2.x` 响应式实现的部分： 它在内部通过 `Object.defineProperty API` 劫持数据的变化，在数据被访问的时候收集依赖，然后在数据被修改的时候通知依赖更新。下图可以直观地看清这个流程。
+
+![CgqCHl8YAPSAYotsAAG17TKWHiQ421](../image/CgqCHl8YAPSAYotsAAG17TKWHiQ421.png)
+
+在 `Vue.js 2.x` 中，`Watcher` 就是依赖，有专门针对组件渲染的 `render watcher`。注意这里有两个流程，**首先是依赖收集流程，组件在 `render` 的时候会访问模板中的数据，触发 `getter` 把 `render watcher` 作为依赖收集，并和数据建立联系；然后是派发通知流程，当我对这些数据修改的时候，会触发 `setter`，通知 `render watcher` 更新，进而触发了组件的重新渲染。**
+
+在导读章节，**提到了 `Object.defineProperty API` 的一些缺点：不能监听对象属性新增和删除；初始化阶段递归执行 `Object.defineProperty` 带来的性能负担。**
+
+`Vue.js 3.0 `为了解决 `Object.defineProperty` 的这些缺陷，使用 `Proxy API` 重写了响应式部分，并独立维护和发布整个 `reactivity` 库，下面一起来深入学习 `Vue.js 3.0` 响应式部分的实现原理。
+
+###  `Vue.js 3.0` 响应式实现原理
+
+#### 响应式对象的实现差异
+
+**在 `Vue.js 2.x` 中构建组件时，只要我们在 `data、props、computed` 中定义数据，那么它就是响应式的**，举个例子：
+
+```vue
+<template>
+  <div>
+    <p>{{ msg }}</p>
+    <button @click="random">Random msg</button>
+  </div>
+</template>
+<script>
+  export default {
+    data() {
+      return {
+        msg: 'msg reactive'
+      }
+    },
+    methods: {
+      random() {
+        this.msg = Math.random()
+      }
+    }
+  }
+</script>
+```
+
+上述组件初次渲染会显示`“msg reactive”`，当我们点击按钮的时候，会执行` random` 函数，`random` 函数会修改 `this.msg`，就会发现组件重新渲染了。
+
+我们对这个例子做一些改动，模板部分不变，我们把 `msg` 数据的定义放到`created` 钩子中：
+
+```javascript
+export default {
+  created() {
+    this.msg = 'msg not reactive'
+  }, 
+  methods: {
+    random() {
+      this.msg = Math.random()
+    }
+  }
+}
+```
+
+此时，组件初次渲染显示`“msg not reactive”`，但是我们再次点击按钮就会发现组件并没有重新渲染。
+
+这个问题相信你可能遇到过，其中的根本原因是我们**在 `created `中定义的 `this.msg` 并不是响应式对象**，所以 `Vue.js` 内部不会对它做额外的处理。而 `data` 中定义的数据，`Vue.js` 内部在组件初始化的过程中会把它变成响应式，这是一个相对黑盒的过程，用户通常不会感知到。
+
+你可能会好奇，为什么我在 `created` 钩子函数中定义数据而不在 `data` 中去定义？**其实在 `data` 中定义数据最终也是挂载到组件实例 `this` 上，这和我直接在 `created` 钩子函数通过 `this.xxx `定义的数据唯一区别就是，在 `data` 中定义的数据是响应式的。**
+
+**在一些场景下，如果我们仅仅想在组件上下文中共享某个变量，而不必去监测它的这个数据变化，这时就特别适合在 `created` 钩子函数中去定义这个变量，因为创建响应式的过程是有性能代价的，这相当于一种 `Vue.js` 应用的性能优化小技巧**，你掌握了这一点就可以在合适的场景中应用了。
+
+到了 **Vue.js 3.0** 构建组件时，你可以不依赖于 `Options API`，而**使用 Composition API** 去编写。对于刚才的例子，我们可以用 `Composition API` 这样改写：
+
+```vue
+<template>
+  <div>
+    <p>{{ state.msg }}</p>
+    <button @click="random">Random msg</button>
+  </div>
+</template>
+<script>
+  import { reactive } from 'vue'
+  export default {
+    setup() {
+      const state = reactive({
+        msg: 'msg reactive'
+      })
+      const random = function() {
+        state.msg = Math.random()
+      }
+      return {
+        random,
+        state
+      }
+    }
+  }
+</script>
+```
+
+可以看到，我们通过 `setup` 函数实现和前面示例同样的功能。请注意，这里我们引入了 **reactive API，它可以把一个对象数据变成响应式。 可以看出来 `Composition API` 更推荐用户主动定义响应式对象，而非内部的黑盒处理。这样用户可以更加明确哪些数据是响应式的，如果你不想让数据变成响应式，就定义成它的原始数据类型即可。**
+
+也就是在 `Vue.js 3.0` 中，我们用 `reactive` 这个有魔力的函数，把数据变成了响应式，那么它内部到底是怎么实现的呢？我们接下来一探究竟。
+
+#### Reactive API
+
+##### `createReactiveObject`
+
+先来看一下 `reactive` 函数的具体实现过程：
+
+```javascript
+function reactive (target) {
+   // 如果尝试把一个 readonly proxy 变成响应式，直接返回这个 readonly proxy
+  if (target && target.__v_isReadonly) {
+     return target
+  } 
+  return createReactiveObject(target, false, mutableHandlers, mutableCollectionHandlers)
+}
+function createReactiveObject(target, isReadonly, baseHandlers, collectionHandlers) {
+  if (!isObject(target)) {
+    // 目标必须是对象或数组类型
+    if ((process.env.NODE_ENV !== 'production')) {
+      console.warn(`value cannot be made reactive: ${String(target)}`)
+    }
+    return target
+  }
+  if (
+    target[ReactiveFlags.RAW] &&
+    !(isReadonly && target[ReactiveFlags.IS_REACTIVE])
+  ) {
+    // target 已经是 Proxy 对象，直接返回
+    // 有个例外，如果是 readonly 作用于一个响应式对象，则继续
+    return target
+  }
+  // target 已经有对应的 Proxy 了，则直接返回
+  const proxyMap = isReadonly ? readonlyMap : reactiveMap
+  const existingProxy = proxyMap.get(target)
+  if (existingProxy) {
+    return existingProxy
+  }
+  // 只有在白名单里的数据类型才能变成响应式
+  const targetType = getTargetType(target)
+  if (targetType === TargetType.INVALID) {
+    return target
+  }
+  // 利用 Proxy 创建响应式
+  const observed = new Proxy(target, collectionTypes.has(target.constructor) ? collectionHandlers : baseHandlers)
+  // 将target对应的proxy绑定到proxyMap（readonlyMap or reactiveMap）上
+  // 以便于下次判断target是否已有对应的响应式对象
+  proxyMap.set(target, proxy)
+  return observed
+}
+```
+
+可以看到，`reactive` 内部通过 `createReactiveObject` 函数把 `target` 变成了一个响应式对象。
+
+在这个过程中，`createReactiveObject` 函数主要做了以下几件事情。
+
+1. 函数首先判断 `target` 是不是数组或者对象类型，如果不是则直接返回。所以**原始数据 target 必须是对象或者数组**。
+
+2. **如果对一个已经是响应式的对象再次执行 `reactive`，还应该返回这个响应式对象**，举个例子：
+
+   ```javascript
+   import { reactive } from 'vue'
+   const original = { foo: 1 }
+   const observed = reactive(original)
+   const observed2 = reactive(observed)
+   observed === observed2 // true
+   ```
+
+   可以看到 `observed` 已经是响应式结果了，如果对它再去执行 `reactive`，返回的值 `observed2` 和 `observed` 还是同一个对象引用。
+
+   **因为这里 `reactive` 函数会通过 `target.__v_raw `属性来判断 `target `是否已经是一个响应式对象（因为响应式对象的 `__v_raw` 属性会指向它自身，后面会提到），如果是的话则直接返回响应式对象。**
+
+3. **如果对同一个原始数据多次执行 `reactive` ，那么会返回相同的响应式对象**，举个例子：
+
+   ```javascript
+   import { reactive } from 'vue'
+   const original = { foo: 1 }
+   const observed = reactive(original)
+   const observed2 = reactive(original)
+   observed === observed2 // true
+   ```
+
+   可以看到，原始数据 `original` 被反复执行 `reactive`，但是响应式结果 `observed` 和 `observed2 `是同一个对象。
+
+   **所以这里 `reactive` 函数会通过 `proxyMap`去判断` target` 是否已经有对应的响应式对象（因为创建完响应式对象后，会将原始对象作为`key`，响应式对象作为`value`，设置到`proxyMap`上），如果有则返回这个响应式对象。**
+
+4. 使用 `getTargetType` 函数对 `target` 对象做一进步限制：
+
+   ```javascript
+   const targetType = getTargetType(target)
+   if (targetType === TargetType.INVALID) {
+     return target
+   }
+   
+   function getTargetType(value: Target) {
+     return value[ReactiveFlags.SKIP] || !Object.isExtensible(value)
+       ? TargetType.INVALID
+       : targetTypeMap(toRawType(value))
+   }
+   
+   const enum TargetType {
+     INVALID = 0,
+     COMMON = 1,
+     COLLECTION = 2
+   }
+   
+   // target type 映射关系
+   function targetTypeMap(rawType: string) {
+     switch (rawType) {
+       case 'Object':
+       case 'Array':
+         return TargetType.COMMON
+       case 'Map':
+       case 'Set':
+       case 'WeakMap':
+       case 'WeakSet':
+         return TargetType.COLLECTION
+       default:
+         return TargetType.INVALID
+     }
+   }
+   ```
+
+   比如，**带有 `__v_skip` 属性的对象、被冻结的对象，以及不在白名单内的对象如 `Date` 类型的对象实例是不能变成响应式的。**
+
+5. 通过 `Proxy API` 劫持` target `对象，把它变成响应式。我们把 `Proxy `函数返回的结果称作响应式对象，这里 `Proxy `对应的处理器对象会根据数据类型的不同而不同，我们稍后会重点分析基本数据类型的 `Proxy` 处理器对象，`reactive` 函数传入的 `baseHandlers` 值是 `mutableHandlers`。
+
+6. **将target对应的proxy绑定到proxyMap（readonlyMap or reactiveMap）上，方便通过 `proxyMap`去判断` target` 是否已经有对应的响应式对象**，如下：
+
+   ```javascript
+   proxyMap.set(target, proxy)
+   ```
+
+   这就是前面**“对同一个原始数据多次执行 reactive ，那么会返回相同的响应式对象”**逻辑的判断依据。
+
+仔细想想看，响应式的实现方式无非就是劫持数据，`Vue.js 3.0` 的 `reactive API` 就是通过 `Proxy `劫持数据，而且由于 `Proxy` 劫持的是整个对象，所以我们可以检测到任何对对象的修改，弥补了 `Object.defineProperty API` 的不足。
+
+##### ` Proxy `处理器对象 `mutableHandlers `
+
+接下来，我们继续看` Proxy `处理器对象 `mutableHandlers `的实现：
+
+```javascript
+const mutableHandlers = {
+  get,
+  set,
+  deleteProperty,
+  has,
+  ownKeys
+}
+```
+
+它其实就是劫持了我们对 `observed `对象的一些操作，比如：
+
+- **访问对象属性会触发 `get` 函数；**
+- **设置对象属性会触发 `set` 函数；**
+- **删除对象属性会触发 `deleteProperty` 函数；**
+- **`in` 操作符会触发 `has` 函数；**
+- **通过 `Object.getOwnPropertyNames` 访问对象属性名会触发 `ownKeys `函数。**
+
+因为无论命中哪个处理器函数，它都会做依赖收集和派发通知这两件事其中的一个，所以这里我只要分析常用的 `get` 和 `set` 函数就可以了。
+
+##### 依赖收集：`get` 函数
+
+###### `createGetter`
+
+**依赖收集发生在数据访问的阶段**，由于我们用 `Proxy API` 劫持了数据对象，所以当这个响应式对象属性被访问的时候就会执行 `get` 函数，我们来看一下 `get `函数的实现，其实它是执行 `createGetter` 函数的返回值，为了分析主要流程，这里省略了 `get `函数中的一些分支逻辑，`isReadonly` 也默认为 `false`：
+
+```javascript
+function createGetter(isReadonly = false) {
+  return function get(target, key, receiver) {
+    if (key === "__v_isReactive" /* isReactive */) {
+      // 代理 observed.__v_isReactive
+      return !isReadonly
+    }
+    else if (key === "__v_isReadonly" /* isReadonly */) {
+      // 代理 observed.__v_isReadonly
+      return isReadonly;
+    }
+    else if (key === "__v_raw" /* raw */) {
+      // 代理 observed.__v_raw
+      return target
+    }
+    const targetIsArray = isArray(target)
+    // arrayInstrumentations 包含对数组一些方法修改的函数
+    if (targetIsArray && hasOwn(arrayInstrumentations, key)) {
+      return Reflect.get(arrayInstrumentations, key, receiver)
+    }
+    // 求值
+    const res = Reflect.get(target, key, receiver)
+    // 内置 Symbol key 不需要依赖收集
+    if (isSymbol(key) && builtInSymbols.has(key) || key === '__proto__') {
+      return res
+    }
+    // 依赖收集
+    !isReadonly && track(target, "get" /* GET */, key)
+    return isObject(res)
+      ? isReadonly
+        ?
+        readonly(res)
+        // 如果 res 是个对象或者数组类型，则递归执行 reactive 函数把 res 变成响应式
+        : reactive(res)
+      : res
+  }
+}
+```
+
+结合上述代码来看，`get `函数主要做了四件事情，**首先对特殊的 key 做了代理**，这就是为什么我们在 `createReactiveObject `函数中判断响应式对象是否存在 `__v_raw `属性，如果存在就返回这个响应式对象本身。
+
+###### `arrayInstrumentations`
+
+**接着通过 Reflect.get 方法求值**，如果` target `是数组且` key `命中了` arrayInstrumentations`，则执行对应的函数，我们可以大概看一下` arrayInstrumentations `的实现：
+
+```javascript
+const arrayInstrumentations = {}
+['includes', 'indexOf', 'lastIndexOf'].forEach(key => {
+  arrayInstrumentations[key] = function (...args) {
+    // toRaw 可以把响应式对象转成原始数据
+    const arr = toRaw(this)
+    for (let i = 0, l = this.length; i < l; i++) {
+      // 依赖收集
+      track(arr, "get" /* GET */, i + '')
+    }
+    // 先尝试用参数本身，可能是响应式数据
+    const res = arr[key](...args)
+    if (res === -1 || res === false) {
+      // 如果失败，再尝试把参数转成原始数据
+      return arr[key](...args.map(toRaw))
+    }
+    else {
+      return res
+    }
+  }
+})
+```
+
+也就是说，**当 `target` 是一个数组的时候，我们去访问` target.includes、target.indexOf `或者 `target.lastIndexOf `就会执行 `arrayInstrumentations` 代理的函数，除了调用数组本身的方法求值外，还对数组每个元素做了依赖收集**。因为一旦数组的元素被修改，数组的这几个 `API `的返回结果都可能发生变化，所以我们需要跟踪数组每个元素的变化。
+
+回到 `get `函数，第三步就是**通过 Reflect.get 求值，然后会执行 track 函数收集依赖**，我们稍后重点分析这个过程。
+
+**函数最后会对计算的值 res 进行判断，如果它也是数组或对象，则递归执行 `reactive`把 `res `变成响应式对象。这么做是因为 `Proxy` 劫持的是对象本身，并不能劫持子对象的变化，这点和 `Object.defineProperty API` 一致。但是 `Object.defineProperty` 是在初始化阶段，即定义劫持对象的时候就已经递归执行了，而 `Proxy` 是在对象属性被访问的时候才递归执行下一步 `reactive`，这其实是一种延时定义子对象响应式的实现，在性能上会有较大的提升。**
+
+###### ` track `函数收集依赖
+
+整个 `get` 函数最核心的部分其实是**执行 track 函数收集依赖**，下面我们重点分析这个过程。
+
+我们先来看一下` track` 函数的实现：
+
+```javascript
+// 是否应该收集依赖
+let shouldTrack = true
+// 当前激活的 effect
+let activeEffect
+// 原始数据对象 map
+const targetMap = new WeakMap()
+function track(target, type, key) {
+  if (!shouldTrack || activeEffect === undefined) {
+    return
+  }
+  let depsMap = targetMap.get(target)
+  if (!depsMap) {
+    // 每个 target 对应一个 depsMap
+    targetMap.set(target, (depsMap = new Map()))
+  }
+  let dep = depsMap.get(key)
+  if (!dep) {
+    // 每个 key 对应一个 dep 集合
+    depsMap.set(key, (dep = new Set()))
+  }
+  if (!dep.has(activeEffect)) {
+    // 收集当前激活的 effect 作为依赖
+    dep.add(activeEffect)
+   // 当前激活的 effect 收集 dep 集合作为依赖
+    activeEffect.deps.push(dep)
+  }
+}
+```
+
+分析这个函数的实现前，我们先想一下要收集的依赖是什么，我们的目的是实现响应式，就是当数据变化的时候可以自动做一些事情，比如执行某些函数，所以我们**收集的依赖就是数据变化后执行的副作用函数**。
+
+再来看实现，我们把` target `作为原始的数据，`key` 作为访问的属性。我们创建了全局的 `targetMap` 作为原始数据对象的 `Map`，它的键是 `target`，值是 `depsMap`，作为依赖的 `Map`；这个 `depsMap` 的键是 `target` 的 `key`，值是 `dep` 集合，`dep `集合中存储的是依赖的副作用函数。为了方便理解，可以通过下图表示它们之间的关系：
+
+![Ciqc1F8YAL6Afvr-AAEj_nQbDuE332](../image/Ciqc1F8YAL6Afvr-AAEj_nQbDuE332.png)
+
+所以每次` track` ，就是把当前激活的副作用函数 `activeEffect `作为依赖，然后收集到 `target `相关的 `depsMap` 对应 `key `下的依赖集合 `dep` 中。
+
+##### 派发通知：`set `函数
+
+###### `createSetter` 
+
+派发通知发生在数据更新的阶段 ，由于我们用 `Proxy API` 劫持了数据对象，所以当这个响应式对象属性更新的时候就会执行 `set `函数。我们来看一下 `set` 函数的实现，它是执行 `createSetter` 函数的返回值：
+
+```javascript
+function createSetter() {
+  return function set(target, key, value, receiver) {
+    const oldValue = target[key]
+    value = toRaw(value)
+    const hadKey = hasOwn(target, key)
+    const result = Reflect.set(target, key, value, receiver)
+    // 如果目标的原型链也是一个 proxy，通过 Reflect.set 修改原型链上的属性会再次触发 setter，这种情况下就没必要触发两次 trigger 了
+    if (target === toRaw(receiver)) {
+      if (!hadKey) {
+        trigger(target, "add" /* ADD */, key, value)
+      }
+      else if (hasChanged(value, oldValue)) {
+        trigger(target, "set" /* SET */, key, value, oldValue)
+      }
+    }
+    return result
+  }
+}
+```
+
+结合上述代码来看，`set` 函数的实现逻辑很简单，主要就做两件事情， **首先通过 `Reflect.set `求值** ， **然后通过` trigger `函数派发通知** ，并依据 `key `是否存在于 `target `上来确定通知类型，即新增还是修改。
+
+整个 `set` 函数最核心的部分就是 **执行 `trigger` 函数派发通知** ，下面我们将重点分析这个过程。
+
+###### ` trigger` 
+
+我们先来看一下 `trigger` 函数的实现，为了分析主要流程，这里省略了` trigger` 函数中的一些分支逻辑：
+
+```javascript
+// 原始数据对象 map
+const targetMap = new WeakMap()
+function trigger(target, type, key, newValue) {
+  // 通过 targetMap 拿到 target 对应的依赖集合
+  const depsMap = targetMap.get(target)
+  if (!depsMap) {
+    // 没有依赖，直接返回
+    return
+  }
+  // 创建运行的 effects 集合
+  const effects = new Set()
+  // 添加 effects 的函数
+  const add = (effectsToAdd) => {
+    if (effectsToAdd) {
+      effectsToAdd.forEach(effect => {
+        effects.add(effect)
+      })
+    }
+  }
+  // SET | ADD | DELETE 操作之一，添加对应的 effects
+  if (key !== void 0) {
+    add(depsMap.get(key))
+  }
+  const run = (effect) => {
+    // 调度执行
+    if (effect.options.scheduler) {
+      effect.options.scheduler(effect)
+    }
+    else {
+      // 直接运行
+      effect()
+    }
+  }
+  // 遍历执行 effects
+  effects.forEach(run)
+}
+```
+
+`trigger` 函数的实现也很简单，主要做了四件事情：
+
+1. 通过` targetMap `拿到 `target `对应的依赖集合 `depsMap`；
+2. 创建运行的 `effects` 集合；
+3. 根据 `key` 从 `depsMap` 中找到对应的 `effects` 添加到 `effects `集合；
+4. 遍历 `effects` 执行相关的副作用函数。
+
+所以每次 `trigger` 函数就是根据 `target `和 `key` ，从 `targetMap `中找到相关的所有副作用函数遍历执行一遍。
+
+在描述依赖收集和派发通知的过程中，我们都提到了一个词：副作用函数，依赖收集过程中我们把 `activeEffect`（当前激活副作用函数）作为依赖收集，它又是什么？
+
+##### 副作用函数
+
+介绍副作用函数前，我们先回顾一下响应式的原始需求，即我们修改了数据就能自动执行某个函数，举个简单的例子：
+
+```javascript
+import { reactive } from 'vue'
+const counter = reactive({
+  num: 0
+})
+function logCount() {
+  console.log(counter.num)
+}
+function count() {
+  counter.num++
+}
+logCount()
+count()
+```
+
+可以看到，这里我们定义了响应式对象 `counter`，然后我们在 `logCount `中访问了 `counter.num`，我们希望通过执行 `count` 函数修改 `counter.num` 值的时候，能自动执行 `logCount` 函数。
+
+按我们之前对依赖收集过程的分析，如果这个` logCount` 就是 `activeEffect` 的话，那么就可以实现需求，但显然是做不到的，因为代码在执行到 `console.log(counter.num)`这一行 的时候，它对自己在` logCount` 函数中的运行是一无所知的。
+
+那么该怎么办呢？其实只要我们运行` logCount` 函数前，把`logCount `赋值给 `activeEffect` 就好了，如下：
+
+```javascript
+activeEffect = logCount 
+logCount()
+```
+
+顺着这个思路，我们可以利用高阶函数的思想，对` logCount `做一层封装，如下：
+
+```javascript
+function wrapper(fn) {
+  const wrapped = function(...args) {
+    activeEffect = fn
+    fn(...args)
+  }
+  return wrapped
+}
+const wrappedLog = wrapper(logCount)
+wrappedLog()
+```
+
+这里，`wrapper `本身也是一个函数，它接受 `fn `作为参数，返回一个新的函数 `wrapped`，然后维护一个全局的 `activeEffect`，当 `wrapped `执行的时候，把 `activeEffect `设置为` fn`，然后执行 `fn `即可。
+
+这样当我们执行 `wrappedLog` 后，再去修改 `counter.num`，就会自动执行 `logCount `函数了。
+
+###### `createReactiveEffect`
+
+实际上 `Vue.js 3.0` 就是采用类似的做法，在它内部就有一个` effect` 副作用函数，我们来看一下它的实现：
+
+```javascript
+// 全局 effect 栈
+const effectStack = []
+// 当前激活的 effect
+let activeEffect
+function effect(fn, options = EMPTY_OBJ) {
+  if (isEffect(fn)) {
+    // 如果 fn 已经是一个 effect 函数了，则指向原始函数
+    fn = fn.raw
+  }
+  // 创建一个 wrapper，它是一个响应式的副作用的函数
+  const effect = createReactiveEffect(fn, options)
+  if (!options.lazy) {
+    // lazy 配置，计算属性会用到，非 lazy 则直接执行一次
+    effect()
+  }
+  return effect
+}
+
+function createReactiveEffect(fn, options) {
+  const effect = function reactiveEffect(...args) {
+    if (!effect.active) {
+      // 非激活状态，则判断如果非调度执行，则直接执行原始函数。
+      return options.scheduler ? undefined : fn(...args)
+    }
+    if (!effectStack.includes(effect)) {
+      // 清空 effect 引用的依赖
+      cleanup(effect)
+      try {
+        // 开启全局 shouldTrack，允许依赖收集
+        enableTracking()
+        // 压栈
+        effectStack.push(effect)
+        activeEffect = effect
+        // 执行原始函数
+        return fn(...args)
+      }
+      finally {
+        // 出栈
+        effectStack.pop()
+        // 恢复 shouldTrack 开启之前的状态
+        resetTracking()
+        // 指向栈最后一个 effect
+        activeEffect = effectStack[effectStack.length - 1]
+      }
+    }
+  }
+  effect.id = uid++
+  // 标识是一个 effect 函数
+  effect._isEffect = true
+  // effect 自身的状态
+  effect.active = true
+  // 包装的原始函数
+  effect.raw = fn
+  // effect 对应的依赖，双向指针，依赖包含对 effect 的引用，effect 也包含对依赖的引用
+  effect.deps = []
+  // effect 的相关配置
+  effect.options = options
+  return effect
+}
+```
+
+结合上述代码来看，`effect `内部通过执行 `createReactiveEffect` 函数去创建一个新的 `effect` 函数，为了和外部的 `effect` 函数区分，我们把它称作 `reactiveEffect `函数，并且还给它添加了一些额外属性（我在注释中都有标明）。另外，`effect `函数还支持传入一个配置参数以支持更多的 `feature`，我们这里就不展开了，在后续的章节会详细分析。
+
+接着说，这个 `reactiveEffect` 函数就是响应式的副作用函数，当执行` trigger` 过程派发通知的时候，执行的 `effect` 就是它。
+
+按我们之前的分析，这个 `reactiveEffect `函数只需要做两件事情： **把全局的 activeEffect 指向它** ， **然后执行被包装的原始函数 fn 即可** 。
+
+但实际上它的实现要更复杂一些，首先它会判断 `effect `的状态是否是` active`，这其实是一种控制手段，允许在非 `active` 状态且非调度执行情况，则直接执行原始函数 `fn `并返回，在后续学习完侦听器后你会对它的理解更加深刻。
+
+###### ` effectStack `
+
+接着判断` effectStack `中是否包含 `effect`，如果没有就把` effect `压入栈内。之前我们提到，只要设置` activeEffect = effect` 即可，那么这里为什么要设计一个栈的结构呢？
+
+其实是考虑到以下这样一个嵌套` effect` 的场景：
+
+```javascript
+import { reactive} from 'vue' 
+import { effect } from '@vue/reactivity' 
+const counter = reactive({ 
+  num: 0, 
+  num2: 0 
+}) 
+function logCount() { 
+  effect(logCount2) 
+  console.log('num:', counter.num) 
+} 
+function count() { 
+  counter.num++ 
+} 
+function logCount2() { 
+  console.log('num2:', counter.num2) 
+} 
+effect(logCount) 
+count()
+```
+
+我们每次执行 `effect `函数时，如果仅仅把 `reactiveEffect` 函数赋值给 `activeEffect`，那么针对这种嵌套场景，执行完 `effect(logCount2) `后，`activeEffect `还是 `effect(logCount2) `返回的` reactiveEffect `函数，这样后续访问` counter.num` 的时候，依赖收集对应的 `activeEffect `就不对了，此时我们外部执行` count `函数修改 `counter.num` 后执行的便不是` logCount `函数，而是` logCount2 `函数，最终输出的结果如下：
+
+```javascript
+num2: 0 
+num: 0 
+num2: 0
+```
+
+而我们期望的结果应该如下：
+
+```javascript
+num2: 0 
+num: 0 
+num2: 0 
+num: 1
+```
+
+因此针对嵌套 `effect `的场景，我们不能简单地赋值 `activeEffect`，应该考虑到函数的执行本身就是一种入栈出栈操作，因此我们也可以设计一个` effectStack`，这样每次进入 `reactiveEffect `函数就先把它入栈，然后 `activeEffect` 指向这个 `reactiveEffect` 函数，接着在 `fn` 执行完毕后出栈，再把 `activeEffect `指向` effectStack `最后一个元素，也就是外层 `effect` 函数对应的 `reactiveEffect`。
+
+###### `cleanup `
+
+这里我们还注意到一个细节，**在入栈前会执行 cleanup 函数清空 reactiveEffect 函数对应的依赖** 。在执行 `track `函数的时候，除了收集当前激活的` effect` 作为依赖，还通过 `activeEffect.deps.push(dep) `把`dep `作为 `activeEffect` 的依赖，这样在` cleanup` 的时候我们就可以找到` effect `对应的 `dep `了，然后把 `effect` 从这些 `dep `中删除。`cleanup `函数的代码如下所示：
+
+```javascript
+function cleanup(effect) {
+  const { deps } = effect
+  if (deps.length) {
+    for (let i = 0; i < deps.length; i++) {
+      deps[i].delete(effect)
+    }
+    deps.length = 0
+  }
+}
+```
+
+为什么需要 `cleanup `呢？如果遇到这种场景：
+
+```vue
+<template>
+  <div v-if="state.showMsg">
+    {{ state.msg }}
+  </div>
+  <div v-else>
+    {{ Math.random()}}
+  </div>
+  <button @click="toggle">Toggle Msg</button>
+  <button @click="switchView">Switch View</button>
+</template>
+<script>
+  import { reactive } from 'vue'
+  export default {
+    setup() {
+      const state = reactive({
+        msg: 'Hello World',
+        showMsg: true
+      })
+      function toggle() {
+        state.msg = state.msg === 'Hello World' ? 'Hello Vue' : 'Hello World'
+      }
+      function switchView() {
+        state.showMsg = !state.showMsg
+      }
+      return {
+        toggle,
+        switchView,
+        state
+      }
+    }
+  }
+</script>
+```
+
+结合代码可以知道，这个组件的视图会根据 `showMsg `变量的控制显示 `msg `或者一个随机数，当我们点击 `Switch View` 的按钮时，就会修改这个变量值。
+
+**假设没有 `cleanup`，在第一次渲染模板的时候，`activeEffect `是组件的副作用渲染函数，因为模板 `render` 的时候访问了 `state.msg`，所以会执行依赖收集，把副作用渲染函数作为 `state.msg` 的依赖，我们把它称作 `render effect`。然后我们点击 `Switch View` 按钮，视图切换为显示随机数，此时我们再点击 `Toggle Msg `按钮，由于修改了 `state.msg `就会派发通知，找到了 `render effect `并执行，就又触发了组件的重新渲染。**
+
+**但这个行为实际上并不符合预期，因为当我们点击 `Switch View` 按钮，视图切换为显示随机数的时候，也会触发组件的重新渲染，但这个时候视图并没有渲染 `state.msg`，所以对它的改动并不应该影响组件的重新渲染。**
+
+**因此在组件的` render effect` 执行之前，如果通过 `cleanup `清理依赖，我们就可以删除之前 `state.msg` 收集的 `render effect` 依赖。这样当我们修改` state.msg` 时，由于已经没有依赖了就不会触发组件的重新渲染，符合预期。**
+
+至此，从` reactive API` 入手了解了整个响应式对象的实现原理。除了` reactive API`，Vue.js 3.0 还提供了其他好用的响应式 `API`，接下来一起分析一些常用的。
+
+#### readonly API
+
+##### `createReactiveObject`
+
+如果用 `const `声明一个对象变量，虽然不能直接对这个变量赋值，但我们可以修改它的属性。如果我们希望创建只读对象，不能修改它的属性，也不能给这个对象添加和删除属性，让它变成一个真正意义上的只读对象。
+
+```javascript
+const original = {
+  foo: 1
+}
+const wrapped = readonly(original)
+wrapped.foo = 2
+// warn: Set operation on key "foo" failed: target is readonly.
+```
+
+显然，想实现上述需求就需要劫持对象，于是` Vue.js 3.0` 在 `reactive API `的基础上，设计并实现了 `readonly API`。
+
+我们先来看一下 `readonly `的实现：
+
+```javascript
+function readonly(target) {
+    return createReactiveObject(target, true, readonlyHandlers, readonlyCollectionHandlers)
+}
+
+function createReactiveObject(target, isReadonly, baseHandlers, collectionHandlers) {
+  if (!isObject(target)) {
+    // 目标必须是对象或数组类型
+    if ((process.env.NODE_ENV !== 'production')) {
+      console.warn(`value cannot be made reactive: ${String(target)}`)
+    }
+    return target
+  }
+  if (
+    target[ReactiveFlags.RAW] &&
+    !(isReadonly && target[ReactiveFlags.IS_REACTIVE])
+  ) {
+    // target 已经是 Proxy 对象，直接返回
+    // 有个例外，如果是 readonly 作用于一个响应式对象，则继续
+    return target
+  }
+  // target 已经有对应的 Proxy 了，则直接返回
+  const proxyMap = isReadonly ? readonlyMap : reactiveMap
+  const existingProxy = proxyMap.get(target)
+  if (existingProxy) {
+    return existingProxy
+  }
+  // 只有在白名单里的数据类型才能变成响应式
+  const targetType = getTargetType(target)
+  if (targetType === TargetType.INVALID) {
+    return target
+  }
+  // 利用 Proxy 创建响应式
+  const observed = new Proxy(target, collectionTypes.has(target.constructor) ? collectionHandlers : baseHandlers)
+  // 将target对应的proxy绑定到proxyMap（readonlyMap or reactiveMap）上
+  // 以便于下次判断target是否已有对应的响应式对象
+  proxyMap.set(target, proxy)
+  return observed
+}
+```
+
+其实 `readonly `和 `reactive `函数的主要区别，就是执行` createReactiveObject `函数时的参数 `isReadonly `不同。
+
+我们来看这里的代码，首先` isReadonly `变量为 `true`，所以在创建过程中会给原始对象 `target `打上一个` __v_readonly` 的标识。另外还有一个特殊情况，如果 `target` 已经是一个 `reactive` 对象，就会把它继续变成一个` readonly` 响应式对象。
+
+其次就是 `baseHandlers` 的` collectionHandlers `的区别，我们这里仍然只关心基本数据类型的` Proxy `处理器对象，`readonly `函数传入的 `baseHandlers` 值是 `readonlyHandlers`。
+
+##### ` Proxy `处理器对象`readonlyHandlers`
+
+接下来，我们来看一下其中 `readonlyHandlers` 的实现：
+
+```javascript
+const readonlyHandlers = {
+  get: readonlyGet,
+  has,
+  ownKeys,
+  set(target, key) {
+    if ((process.env.NODE_ENV !== 'production')) {
+      console.warn(`Set operation on key "${String(key)}" failed: target is readonly.`, target)
+    }
+    return true
+  },
+  deleteProperty(target, key) {
+    if ((process.env.NODE_ENV !== 'production')) {
+      console.warn(`Delete operation on key "${String(key)}" failed: target is readonly.`, target)
+    }
+    return true
+  }
+}
+```
+
+`readonlyHandlers `和` mutableHandlers `的区别主要在` get、set` 和 `deleteProperty `三个函数上。很显然，作为一个只读的响应式对象，是不允许修改属性以及删除属性的，所以在非生产环境下 `set` 和 `deleteProperty` 函数的实现都会报警告，提示用户 `target` 是` readonly `的。
+
+#####  `readonlyGet` 
+
+接下来我们来看一下其中 `readonlyGet` 的实现，它其实就是 `createGetter(true) `的返回值：
+
+```javascript
+function createGetter(isReadonly = false) {
+  return function get(target, key, receiver) {
+    // ...
+    // isReadonly 为 true 则不需要依赖收集
+    !isReadonly && track(target, "get" /* GET */, key)
+    return isObject(res)
+      ? isReadonly
+        ?
+        // 如果 res 是个对象或者数组类型，则递归执行 readonly 函数把 res readonly
+        readonly(res)
+        : reactive(res)
+      : res
+  }
+}
+```
+
+可以看到，它和` reactive API `最大的区别就是不做依赖收集了，这一点也非常好理解，因为它的属性不会被修改，所以就不用跟踪它的变化了。
+
+到这里，`readonly API `就介绍完了，接下来我们分析一下另一个常用的响应式 `API：ref`。
+
+#### `ref API`
+
+通过前面的分析，我们知道 `reactive API `对传入的` target `类型有限制，必须是对象或者数组类型，而对于一些基础类型（比如 `String、Number、Boolean`）是不支持的。
+
+但是有时候从需求上来说，可能我只希望把一个字符串变成响应式，却不得不封装成一个对象，这样使用上多少有一些不方便，于是 `Vue.js 3.0 `设计并实现了 `ref API`。
+
+```javascript
+const msg = ref('Hello World') 
+msg.value = 'Hello Vue'
+```
+
+我们先来看一下` ref `的实现：
+
+```javascript
+function ref(value) {
+  return createRef(value)
+}
+
+const convert = (val) => isObject(val) ? reactive(val) : val
+
+function createRef(rawValue: unknown, shallow = false) {
+  if (isRef(rawValue)) {
+    // 如果传入的就是一个 ref，那么返回自身即可，处理嵌套 ref 的情况。
+    return rawValue
+  }
+  return new RefImpl(rawValue, shallow)
+}
+
+class RefImpl<T> {
+  private _value: T
+
+  public readonly __v_isRef = true
+
+  constructor(private _rawValue: T, private readonly _shallow = false) {
+    // 如果是对象或者数组类型，则转换一个 reactive 对象。
+    this._value = _shallow ? _rawValue : convert(_rawValue)
+  }
+
+  get value() {
+    // getter
+    // 依赖收集，key 为固定的 value
+    track(toRaw(this), TrackOpTypes.GET, 'value')
+    return this._value
+  }
+
+  set value(newVal) {
+    // setter，只处理 value 属性的修改
+    if (hasChanged(toRaw(newVal), this._rawValue)) {
+      // 判断有变化后更新值
+      this._rawValue = newVal
+      this._value = this._shallow ? newVal : convert(newVal)
+      // 派发通知
+      trigger(toRaw(this), TriggerOpTypes.SET, 'value', newVal)
+    }
+  }
+}
+```
+
+可以看到，函数首先处理了嵌套 `ref `的情况，如果传入的 `rawValue `也是` ref`，那么直接返回。
+
+接着对`rawValue `做了一层转换，如果` rawValue` 是对象或者数组类型，那么把它转换成一个 `reactive `对象。
+
+最后定义一个对` value `属性做 `getter `和 `setter `劫持的对象并返回，`get` 部分就是执行`track `函数做依赖收集然后返回它的值；`set` 部分就是设置新值并且执行` trigger` 函数派发通知。
+
+### 总结
+
+通过上面的学习明白了响应式 `API` 的实现原理，知道什么时候收集依赖，什么时候派发更新，以及副作用函数的作用和设计原理。同时我们还应该清楚` reactive、readonly、ref `三种 `API `的区别和各自的使用场景，这样就可以在今后的开发中对它们应用自如了。
+
+最后通过下图来看一下整个响应式` API` 实现和组件更新的关系：
+
+![CgqCHl8iOeqAJJlaAAHAhGDRoDQ714](../image/CgqCHl8iOeqAJJlaAAHAhGDRoDQ714.png)
+
+这幅图是不是很眼熟？没错，它和前面 `Vue.js 2.x` 的响应式原理图很接近，其实 `Vue.js 3.0 `在响应式的实现思路和 `Vue.js 2.x `差别并不大，主要就是 **劫持数据的方式改成用 Proxy 实现** ， **以及收集的依赖由 watcher 实例变成了组件副作用渲染函数** 。
+
+### 问题
+
+**问：**为什么说 `Vue.js 3 `的响应式 `API` 实现和 `Vue.js 2.x `相比性能要好，具体好在哪里呢？它又有哪些不足呢？
+
+**答：**
+
+**优点：**
+
+- `Object.defineProperty` 不能监听对象属性新增和删除，在初始化阶段递归执行劫持对象属性，性能损耗较大；而 `Proxy` 可以监听到对象属性的增删改，在访问对象属性时才递归执行劫持对象属性，在性能上有所提升。
+
+**不足：**
+
+-  `Proxy API` 属于 `ES6 `规范，目前 `IE` 尚不支持。
+
+## 3.3 计算属性：计算属性比普通函数好在哪里？
 
 # 四、编译过程以及优化
 
