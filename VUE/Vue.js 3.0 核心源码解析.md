@@ -3291,6 +3291,14 @@ function track(target, type, key) {
     dep.add(activeEffect)
    // 当前激活的 effect 收集 dep 集合作为依赖
     activeEffect.deps.push(dep)
+    if (__DEV__ && activeEffect.options.onTrack) {
+      activeEffect.options.onTrack({
+        effect: activeEffect,
+        target,
+        type,
+        key
+      })
+    }
   }
 }
 ```
@@ -4925,9 +4933,930 @@ const onInvalidate = (fn) => {
 2. 若有`onStop`函数则执行，清除监听无效后的影响。
 3. 标记当前`effect`为未激活状态。
 
+## 3.5 生命周期：各个生命周期的执行时机和应用场景是怎样的？
 
+`Vue.js `组件的生命周期包括创建、更新、销毁等过程。在这些过程中也会运行叫生命周期钩子的函数，这给了用户在不同阶段添加自己的代码的机会。
+
+在 `Vue.js 2.x` 中，我们通常会在组件对象中定义一些生命周期钩子函数，到了` Vue.js 3.0`，依然兼容 `Vue.js 2.x `生命周期的语法，但是 `Composition API `提供了一些生命周期函数的 `API`，让我们可以主动注册不同的生命周期。
+
+```javascript
+// Vue.js 2.x 定义生命周期钩子函数 
+export default { 
+  created() { 
+    // 做一些初始化工作 
+  }, 
+  mounted() { 
+    // 可以拿到 DOM 节点 
+  }, 
+  beforeDestroy() { 
+    // 做一些清理操作 
+  } 
+} 
+//  Vue.js 3.x 生命周期 API 改写上例 
+import { onMounted, onBeforeUnmount } from 'vue' 
+export default { 
+  setup() { 
+    // 做一些初始化工作 
+
+    onMounted(() => { 
+      // 可以拿到 DOM 节点 
+    }) 
+    onBeforeUnmount(()=>{ 
+      // 做一些清理操作 
+    }) 
+  } 
+}
+```
+
+可以看到，在` Vue.js 3.0 `中，`setup `函数已经替代了 `Vue.js 2.x `的` beforeCreate` 和` created `钩子函数，我们可以在` setup` 函数做一些初始化工作，比如发送一个异步 Ajax 请求获取数据。
+
+我们用` onMounted API `替代了 `Vue.js 2.x `的` mounted `钩子函数，用 `onBeforeUnmount API `替代了` Vue.js 2.x `的 `beforeDestroy `钩子函数。
+
+其实，`Vue.js 3.0` 针对` Vue.js 2.x `的生命周期钩子函数做了全面替换，映射关系如下：
+
+```javascript
+beforeCreate -> 使用 setup() 
+created -> 使用 setup() 
+beforeMount -> onBeforeMount 
+mounted -> onMounted 
+beforeUpdate -> onBeforeUpdate 
+updated -> onUpdated 
+beforeDestroy-> onBeforeUnmount 
+destroyed -> onUnmounted 
+activated -> onActivated 
+deactivated -> onDeactivated 
+errorCaptured -> onErrorCaptured
+```
+
+除此之外，`Vue.js 3.0` 还新增了两个用于调试的生命周期 `API：onRenderTracked `和` onRenderTriggered`。
+
+那么，这些生命周期钩子函数内部是如何实现的？它们又分别在组件生命周期的哪些阶段执行的？分别适用于哪些开发场景？
+
+带着这些疑问，我们来深入学习生命周期钩子函数背后的实现原理。
+
+### 注册钩子函数
+
+首先，我们来看这些钩子函数是如何注册的，先来看一下它们的实现：
+
+```javascript
+const onBeforeMount = createHook('bm' /* BEFORE_MOUNT */) 
+const onMounted = createHook('m' /* MOUNTED */) 
+const onBeforeUpdate = createHook('bu' /* BEFORE_UPDATE */) 
+const onUpdated = createHook('u' /* UPDATED */) 
+const onBeforeUnmount = createHook('bum' /* BEFORE_UNMOUNT */) 
+const onUnmounted = createHook('um' /* UNMOUNTED */) 
+const onRenderTriggered = createHook('rtg' /* RENDER_TRIGGERED */) 
+const onRenderTracked = createHook('rtc' /* RENDER_TRACKED */) 
+const onErrorCaptured = (hook, target = currentInstance) => { 
+  injectHook('ec' /* ERROR_CAPTURED */, hook, target) 
+}
+```
+
+我们发现除了 `onErrorCaptured`，其他钩子函数都是通过` createHook `函数创建的，通过传入不同的字符串来表示不同的钩子函数。
+
+#### `createHook `
+
+那么，我们就来分析一下 `createHook `钩子函数的实现原理：
+
+```javascript
+const createHook = function(lifecycle)  { 
+  return function (hook, target = currentInstance) { 
+    injectHook(lifecycle, hook, target) 
+  } 
+}
+```
+
+`createHook` 会返回一个函数，它的内部通过` injectHook` 注册钩子函数。你可能会问，这里为什么要用 `createHook `做一层封装而不直接使用 `injectHook API `呢？比如：
+
+```javascript
+const onBeforeMount = function(hook,target = currentInstance) { 
+  injectHook('bm', hook, target) 
+} 
+const onMounted = function(hook,target = currentInstance) { 
+  injectHook('m', hook, target) 
+}
+```
+
+这样实现当然也是可以的，不过，我们可以发现，这些钩子函数内部执行逻辑很类似，都是执行` injectHook`，唯一的区别是第一个参数字符串不同，所以这样的代码是可以进一步封装的，即用 `createHook` 封装，这就是一个典型的函数柯里化技巧。
+
+在调用` createHook `返回的函数时，也就不需要传入` lifecycle `字符串，因为它在执行 `createHook` 函数时就已经实现了该参数的保留。
+
+#### `injectHook `
+
+所以，当我们通过 `onMounted(hook) `注册一个钩子函数时，内部就是通过` injectHook('m', hook) `去注册的，接下来我们来进一步看 `injectHook `函数的实现原理：
+
+```javascript
+function injectHook(type, hook, target = currentInstance, prepend = false) { 
+  const hooks = target[type] || (target[type] = []) 
+  // 封装 hook 钩子函数并缓存 
+  const wrappedHook = hook.__weh || 
+    (hook.__weh = (...args) => { 
+      if (target.isUnmounted) { 
+        return 
+      } 
+      // 停止依赖收集 
+      pauseTracking() 
+      // 设置 target 为当前运行的组件实例 
+      setCurrentInstance(target) 
+      // 执行钩子函数 
+      const res = callWithAsyncErrorHandling(hook, target, type, args) 
+      setCurrentInstance(null) 
+      // 恢复依赖收集 
+      resetTracking() 
+      return res 
+    }) 
+  if (prepend) { 
+    hooks.unshift(wrappedHook) 
+  } 
+  else { 
+    hooks.push(wrappedHook) 
+  } 
+}
+```
+
+结合代码来看，**该函数主要是对用户注册的钩子函数 `hook `做了一层封装，然后添加到一个数组中，把数组保存在当前组件实例的 `target `上，这里，key 是用来区分钩子函数的字符串。比如， `onMounted `注册的钩子函数在组件实例上就是通过 `instance.m` 来保存。**
+
+**这样的设计其实非常好理解，因为生命周期的钩子函数，是在组件生命周期的各个阶段执行，所以钩子函数必须要保存在当前的组件实例上，这样后面就可以在组件实例上通过不同的字符串 key 找到对应的钩子函数数组并执行。**
+
+对于相同的钩子函数，会把封装的 `wrappedHook `钩子函数缓存到 `hook.__weh `中，这样后续通过` scheduler `方式执行的钩子函数就会被去重。
+
+**在后续执行 `wrappedHook `函数时，**
+
+1. **会先停止依赖收集，因为钩子函数内部访问的响应式对象，通常都已经执行过依赖收集，所以钩子函数执行的时候没有必要再次收集依赖，毕竟这个过程也有一定的性能消耗。**
+2. **接着是设置` target` 为当前组件实例。**在` Vue.js `的内部，会一直维护当前运行的组件实例 `currentInstance`，在注册钩子函数的过程中，我们可以拿到当前运行组件实例` currentInstance`，并用` target` 保存，然后在钩子函数执行时，为了确保此时的 `currentInstance` 和注册钩子函数时一致，会通过 `setCurrentInstance(target)` 设置 `target `为当前组件实例。
+3. **接下来就是通过 `callWithAsyncErrorHandling `方法去执行我们注册的 `hook `钩子函数，函数执行完毕则设置当前运行组件实例为 null，并恢复依赖收集。**
+
+到这里，我们就了解了生命周期钩子函数是如何注册以及如何执行的，接下来，我们来依次分析各个钩子函数的执行时机和应用场景。
+
+首先，我们来看通过 `onBeforeMount `和 `onMounted `注册的钩子函数。
+
+### `onBeforeMount` 和 `onMounted`
+
+**`onBeforeMount` 注册的 `beforeMount` 钩子函数会在组件挂载之前执行，`onMounted `注册的 `mounted` 钩子函数会在组件挂载之后执行**。我们来回顾一下组件副作用渲染函数关于组件挂载部分的实现：
+
+```javascript
+const setupRenderEffect = (instance, initialVNode, container, anchor, parentSuspense, isSVG, optimized) => { 
+  // 创建响应式的副作用渲染函数 
+  instance.update = effect(function componentEffect() { 
+    if (!instance.isMounted) { 
+      // 获取组件实例上通过 onBeforeMount 钩子函数和 onMounted 注册的钩子函数 
+      const { bm, m } = instance; 
+      // 渲染组件生成子树 vnode 
+      const subTree = (instance.subTree = renderComponentRoot(instance)) 
+      // 执行 beforemount 钩子函数 
+      if (bm) { 
+        invokeArrayFns(bm) 
+      } 
+      // 把子树 vnode 挂载到 container 中 
+      patch(null, subTree, container, anchor, instance, parentSuspense, isSVG) 
+      // 保留渲染生成的子树根 DOM 节点 
+      initialVNode.el = subTree.el 
+      // 执行 mounted 钩子函数 
+      if (m) { 
+        queuePostRenderEffect(m, parentSuspense) 
+      } 
+      instance.isMounted = true 
+    } 
+    else { 
+      // 更新组件 
+    } 
+  }, prodEffectOptions) 
+}
+```
+
+**在执行 `patch` 挂载组件之前，会检测组件实例上是有否有注册的 `beforeMount `钩子函数` bm`，如果有则通过` invokeArrayFns` 执行它，因为用户可以通过多次执行` onBeforeMount `函数注册多个 `beforeMount `钩子函数，所以这里` instance.bm` 是一个数组，通过遍历这个数组来依次执行` beforeMount `钩子函数。**
+
+**在执行` patch` 挂载组件之后，会检查组件实例上是否有注册的 `mounted` 钩子函数` m`，如果有的话则执行 `queuePostRenderEffect`，把 `mounted `钩子函数推入` postFlushCbs `中，然后在整个应用` render` 完毕后，同步执行 `flushPostFlushCbs `函数调用 mounted 钩子函数。**
+
+我经常在社区里听到一种争论：**在组件初始化阶段，对于发送一些 Ajax 异步请求的逻辑，是应该放在 created 钩子函数中，还是应该放在 `mounted` 钩子函数中？**
+
+其实都可以，**因为` created` 和 `mounted` 钩子函数执行的时候都能拿到组件数据，它们执行的顺序虽然有先后，但都会在一个 `Tick` 内执行完毕，而异步请求是有网络耗时的，其耗时远远大于一个 `Tick `的时间。所以，你无论在 `created` 还是在` mounted` 里发请求，都要等请求的响应回来，然后更新数据，再触发组件的重新渲染。**
+
+前面说过，`Vue.js 2.x` 中的 `beforeCreate` 和 `created` 钩子函数可以用` setup` 函数替代。所以，对于组件初始化阶段发送异步请求的逻辑，放在 `setup `函数中、`beforeMount` 钩子函数中或者 `mounted `钩子函数中都可以，它们都可以拿到组件相关的数据。当然，**我更推荐在` setup` 函数中执行，因为从语义化的角度来看这样更合适。**
+
+不过，**如果你想依赖` DOM` 去做一些初始化操作，那就只能把相关逻辑放在 `mounted` 钩子函数中了，这样你才能拿到组件渲染后的 `DOM`。**
+
+对于嵌套组件，组件在挂载相关的生命周期钩子函数时，先执行父组件的 `beforeMount`，然后是子组件的 `beforeMount`，接着是子组件的` mounted` ，最后执行父组件的 `mounted`。
+
+接下来，我们来看通过 `onBeforeUpdate` 和 `onUpdated` 注册的钩子函数。
+
+### onBeforeUpdate 和 onUpdated
+
+**`onBeforeUpdate` 注册的 `beforeUpdate` 钩子函数会在组件更新之前执行，`onUpdated `注册的 `updated `钩子函数会在组件更新之后执行**。我们来回顾一下组件副作用渲染函数关于组件更新的实现：
+
+```javascript
+const setupRenderEffect = (instance, initialVNode, container, anchor, parentSuspense, isSVG, optimized) => { 
+  // 创建响应式的副作用渲染函数 
+  instance.update = effect(function componentEffect() { 
+    if (!instance.isMounted) { 
+      // 渲染组件 
+    } 
+    else { 
+      // 更新组件 
+      // 获取组件实例上通过 onBeforeUpdate 钩子函数和 onUpdated 注册的钩子函数 
+      let { next, vnode, bu, u } = instance 
+      // next 表示新的组件 vnode 
+      if (next) { 
+        // 更新组件 vnode 节点信息 
+        updateComponentPreRender(instance, next, optimized) 
+      } 
+      else { 
+        next = vnode 
+      } 
+      // 渲染新的子树 vnode 
+      const nextTree = renderComponentRoot(instance) 
+      // 缓存旧的子树 vnode 
+      const prevTree = instance.subTree 
+      // 更新子树 vnode 
+      instance.subTree = nextTree 
+      // 执行 beforeUpdate 钩子函数 
+      if (bu) { 
+        invokeArrayFns(bu) 
+      } 
+      // 组件更新核心逻辑，根据新旧子树 vnode 做 patch 
+      patch(prevTree, nextTree, 
+ // 如果在 teleport 组件中父节点可能已经改变，所以容器直接找旧树 DOM 元素的父节点 
+        hostParentNode(prevTree.el), 
+   // 缓存更新后的 DOM 节点 
+        getNextHostNode(prevTree), 
+        instance, 
+        parentSuspense, 
+        isSVG) 
+      // 缓存更新后的 DOM 节点 
+      next.el = nextTree.el 
+      // 执行 updated 钩子函数 
+      if (u) { 
+        queuePostRenderEffect(u, parentSuspense) 
+      } 
+    } 
+  }, prodEffectOptions) 
+}
+```
+
+在执行 `patch `更新组件之前，会检测组件实例上是有否有注册的 `beforeUpdate `钩子函数 `bu`，如果有则通过 `invokeArrayFns `执行它。
+
+**在执行 `patch` 更新组件之后，会检查组件实例上是否有注册的 `updated `钩子函数 `u`，如果有，则通过` queuePostRenderEffect `把 `updated` 钩子函数推入 `postFlushCbs` 中，因为组件的更新本身就是在` nextTick `后进行` flushJobs`，因此此时再次执行 `queuePostRenderEffect` 推入到队列的任务，会在同一个 `Tick` 内执行这些` postFlushCbs`，也就是执行所有 `updated `的钩子函数。**
+
+在 `beforeUpdate `钩子函数执行时，组件的 `DOM` 还未更新，如果你想在组件更新前访问` DOM`，比如手动移除已添加的事件监听器，你可以注册这个钩子函数。
+
+在 `updated `钩子函数执行时，组件 `DOM` 已经更新，所以你现在可以执行依赖于` DOM `的操作。如果要监听数据的改变并执行某些逻辑，最好不要使用 `updated `钩子函数而用计算属性或` watcher` 取而代之，因为任何数据的变化导致的组件更新都会执行 `updated `钩子函数。另外注意， **不要在 updated 钩子函数中更改数据，因为这样会再次触发组件更新，导致无限递归更新** 。
+
+还有，**父组件的更新不一定会导致子组件的更新，因为 `Vue.js `的更新粒度是组件级别的。**
+
+接下来，我们来看通过 `onBeforeUnmount `和 `onUnmounted `注册的钩子函数。
+
+### `onBeforeUnmount `和 `onUnmounted`
+
+**`onBeforeUnmount` 注册的 `beforeUnMount `钩子函数会在组件销毁之前执行，`onUnmounted` 注册的 `unmounted `钩子函数会在组件销毁之后执行** 。我们来看一下组件销毁相关逻辑实现：
+
+```javascript
+const unmountComponent = (instance, parentSuspense, doRemove) => { 
+  const { bum, effects, update, subTree, um } = instance 
+  // 执行 beforeUnmount 钩子函数 
+  if (bum) { 
+    invokeArrayFns(bum) 
+  } 
+  // 清理组件引用的 effects 副作用函数 
+  if (effects) { 
+    for (let i = 0; i < effects.length; i++) { 
+      stop(effects[i]) 
+    } 
+  } 
+  // 如果一个异步组件在加载前就销毁了，则不会注册副作用渲染函数 
+  if (update) { 
+    stop(update) 
+    // 调用 unmount 销毁子树 
+    unmount(subTree, instance, parentSuspense, doRemove) 
+  } 
+  // 执行 unmounted 钩子函数 
+  if (um) { 
+    queuePostRenderEffect(um, parentSuspense) 
+  } 
+}
+```
+
+其实整个组件销毁的逻辑很简单，主要就是**清理组件实例上绑定的 effects 副作用函数和注册的副作用渲染函数 update**，以及**调用 unmount 销毁子树**。
+
+**`unmount `主要就是遍历子树，它会通过递归的方式来销毁子节点，遇到组件节点时执行 `unmountComponent`，遇到普通节点时则删除 `DOM` 元素。组件的销毁过程和渲染过程类似，都是递归的过程。**
+
+在组件销毁前，会检测组件实例上是有否有注册的 `beforeUnmount `钩子函数` bum`，如果有则通过` invokeArrayFns` 执行。
+
+在组件销毁后，会检测组件实例上是否有注册的 `unmounted` 钩子函数 `um`，如果有则通过 `queuePostRenderEffect `把` unmounted` 钩子函数推入到 `postFlushCbs` 中，因为组件的销毁就是组件更新的一个分支逻辑，所以在 `nextTick `后进行` flushJobs`，因此此时再次执行 `queuePostRenderEffect `推入队列的任务，会在同一个 `Tick `内执行这些 `postFlushCbs`，也就是执行所有的 `unmounted `钩子函数。
+
+对于嵌套组件，组件在执行销毁相关的生命周期钩子函数时，**先执行父组件的 `beforeUnmount`，再执行子组件的 `beforeUnmount`，然后执行子组件的` unmounted `，最后执行父组件的 `unmounted`。**
+
+**虽然组件在销毁阶段会清理一些定义的` effects `函数，删除组件内部的 `DOM `元素，但是有一些需要清理的对象，组件并不能自动完成它们的清理，比如你在组件内部创建一个定时器，就应该在 `beforeUnmount `或者 `unmounted `钩子函数中清除**，举个例子：
+
+```javascript
+<template> 
+  <div> 
+    <div> 
+      <p>{{count}}</p> 
+    </div> 
+  </div> 
+</template> 
+<script> 
+  import { ref, onBeforeUnmount } from 'vue' 
+  export default { 
+    setup () { 
+      const count = ref(0) 
+      const timer = setInterval(() => { 
+        console.log(count.value++) 
+      }, 1000) 
+      onBeforeUnmount(() => { 
+        clearInterval(timer) 
+      }) 
+      return { 
+        count 
+      } 
+    } 
+  } 
+</script>
+```
+
+可以看到，这里我们在 `setup` 函数内部定义了一个` timer` 计时器， `count` 每秒会加 1 并在控制台中输出。如果这个组件被销毁，就会触发 `onBeforeUnmount` 注册的` beforeUnmount `钩子函数，然后清除定时器。如果你不清除，就会发现组件销毁后，虽然 DOM 被移除了，计时器仍然存在，并且会一直计时并在控制台输出，这就造成了不必要的内存泄漏。
+
+接下来，我们来看通过 `onErrorCaptured `注册的钩子函数。
+
+### `onErrorCaptured`
+
+在前面的课时中，我们多次接触过一个方法 `callWithErrorHandling`，它就是执行一段函数并通过 `handleError `处理错误。那么，`handleError` 具体做了哪些事情呢？
+
+我们先来看一下它的实现：
+
+```javascript
+function handleError(err, instance, type) { 
+  const contextVNode = instance ? instance.vnode : null 
+  if (instance) { 
+    let cur = instance.parent 
+    // 为了兼容 2.x 版本，暴露组件实例给钩子函数 
+    const exposedInstance = instance.proxy 
+    // 获取错误信息 
+    const errorInfo = (process.env.NODE_ENV !== 'production') ? ErrorTypeStrings[type] : type 
+    // 尝试向上查找所有父组件，执行 errorCaptured 钩子函数 
+    while (cur) { 
+      const errorCapturedHooks = cur.ec 
+      if (errorCapturedHooks) { 
+        for (let i = 0; i < errorCapturedHooks.length; i++) { 
+          // 如果执行的 errorCaptured 钩子函数并返回 true，则停止向上查找。
+          if (errorCapturedHooks[i](err, exposedInstance, errorInfo)) { 
+            return 
+          } 
+        } 
+      } 
+      cur = cur.parent 
+    } 
+  } 
+  // 往控制台输出未处理的错误 
+  logError(err, type, contextVNode) 
+}
+```
+
+**`handleError` 的实现其实很简单，它会从当前报错的组件的父组件实例开始，尝试去查找注册的 `errorCaptured` 钩子函数，如果有则遍历执行并且判断`errorCaptured` 钩子函数的返回值是否为` true`，如果是则说明这个错误已经得到了正确的处理，就会直接结束。**
+
+**否则会继续遍历，遍历完当前组件实例的` errorCaptured `钩子函数后，如果这个错误还没得到正确处理，则向上查找它的父组件实例，以同样的逻辑去查找是否有正确处理该错误的` errorCaptured `钩子函数，直到查找完毕。**
+
+如果整个链路上都没有正确处理错误的 `errorCaptured` 钩子函数，则通过` logError` 往控制台输出未处理的错误。所以 **`errorCaptured` 本质上是捕获一个来自子孙组件的错误**，**它返回` true `就可以阻止错误继续向上传播**。
+
+`errorCaptured `在平时工作中可能用的不多，但它的确是一个很实用的功能，比如你可以在根组件注册一个 `errorCaptured `钩子函数，去捕获所有子孙组件的错误，并且可以根据错误的类型和信息统计和上报错误。
+
+接下来，我们来看通过` onRenderTracked` 和 `onRenderTriggered `注册的钩子函数。
+
+### `onRenderTracked` 和` onRenderTriggered`
+
+`onRenderTracked `和 `onRenderTriggered` 是 `Vue.js 3.0` 新增的生命周期` API`，它们是在开发阶段渲染调试用的。这里再次回顾一下我们创建的副作用渲染函数的第二个参数，在开发环境下它的代码是这样的：
+
+```javascript
+instance.update = effect(function componentEffect() { 
+// 创建或者更组件 
+}, createDevEffectOptions(instance)) 
+function createDevEffectOptions(instance) { 
+  return { 
+    scheduler: queueJob, 
+    onTrack: instance.rtc ? e => invokeArrayFns(instance.rtc, e) : void 0, 
+    onTrigger: instance.rtg ? e => invokeArrayFns(instance.rtg, e) : void 0 
+  } 
+}
+```
+
+通过上述代码我们发现，`onRenderTracked` 和 `onRenderTriggered` 注册的钩子函数，原来是在副作用渲染函数的 `onTrack` 和 `onTrigger `对应的函数中执行的。
+
+我们当时介绍` effect `副作用函数的配置时并没有介绍这两个属性，那么它们是做什么用的呢？
+
+这就要先来看 `onTrack` 函数的执行时机。我们知道当访问一个响应式对象时，会执行 `track `函数做依赖收集，我们来回顾一下它的实现：
+
+```javascript
+function track(target, type, key) { 
+  // 执行一些依赖收集的操作 
+  if (!dep.has(activeEffect)) { 
+    dep.add(activeEffect) 
+    activeEffect.deps.push(dep) 
+    if ((process.env.NODE_ENV !== 'production') && activeEffect.options.onTrack) { 
+      // 执行 onTrack 函数 
+      activeEffect.options.onTrack({ 
+        effect: activeEffect, 
+        target, 
+        type, 
+        key 
+      }) 
+    } 
+  } 
+}
+```
+
+可以看到，`track `函数先执行依赖收集，然后在非生产环境下检测当前的 `activeEffect `的配置有没有定义 `onTrack `函数，如果有的则执行该方法。
+
+因此对应到副作用渲染函数，当它执行的时候，`activeEffect` 就是这个副作用渲染函数，这时访问响应式数据就会触发` track `函数，**在执行完依赖收集后**，**会执行` onTrack` 函数**，**也就是遍历执行我们注册的` renderTracked` 钩子函数**。
+
+接下来，我们再来回顾一下 `trigger` 函数的实现：
+
+```javascript
+function trigger (target, type, key, newValue) { 
+  // 添加要运行的 effects 集合 
+  const run = (effect) => { 
+    if ((process.env.NODE_ENV !== 'production') && effect.options.onTrigger) { 
+        // 执行 onTrigger 
+      effect.options.onTrigger({ 
+        effect, 
+        target, 
+        key, 
+        type, 
+        newValue, 
+        oldValue, 
+        oldTarget 
+      }) 
+    } 
+    if (effect.options.scheduler) { 
+      effect.options.scheduler(effect) 
+    } 
+    else { 
+      effect() 
+    } 
+  } 
+  // 遍历执行 effects 
+  effects.forEach(run) 
+}
+```
+
+我们知道，`trigger` 函数首先要创建运行的 `effects `集合，然后遍历执行，在执行的过程中，会在非生产环境下检测待执行的` effect` 配置中有没有定义 `onTrigger` 函数，如果有则执行该方法。
+
+因此对应到我们的副作用渲染函数，当它内部依赖的响应式对象值被修改后，就会触发 trigger 函数 ，这个时候副作用渲染函数就会被添加到要运行的 `effects `集合中，**在遍历执行 `effects `的时候会执行` onTrigger` 函数**，**也就是遍历执行我们注册的 `renderTriggered `钩子函数**。
+
+了解完 `renderTracked `和` renderTriggered` 钩子函数的执行时机后，我们来看一下实际场景的应用：
+
+```javascript
+<template> 
+  <div> 
+    <div> 
+      <p>{{count}}</p> 
+      <button @click="increase">Increase</button> 
+    </div> 
+  </div> 
+</template> 
+<script> 
+  import { ref, onRenderTracked, onRenderTriggered } from 'vue' 
+  export default { 
+    setup () { 
+      const count = ref(0) 
+      function increase () { 
+        count.value++ 
+      } 
+      onRenderTracked((e) => { 
+        console.log(e) 
+        debugger 
+      }) 
+      onRenderTriggered((e) => { 
+        console.log(e) 
+        debugger 
+      }) 
+      return { 
+        count, 
+        increase 
+      } 
+    } 
+  } 
+</script>
+```
+
+像这样在开发阶段，我们可以通过注册这两个钩子函数，来追踪组件渲染的依赖来源以及触发组件重新渲染的数据更新来源。
+
+### 总结
+
+通过学习，应该掌握` Vue.js `中生命周期注册的` API`，了解各个生命周期的执行时机和应用场景。
+
+最后，我们通过一张图再来直观地感受一下组件的各个生命周期：
+
+![Ciqc1F8zkvmAR_QpAAJxUtKU_4s942](../image/Ciqc1F8zkvmAR_QpAAJxUtKU_4s942.png)
+
+`Vue.js 3.0` 还有 2 个生命周期` API`，分别是 `onActivated` 和 `onDeactivated`，我们将会在介绍 `KeepAlive`组件时详细分析。
+
+### 问题
+
+**问：**如果你想在路由组件切换的时候，取消组件正在发送的异步 `Ajax` 请求，那你应该在哪个生命周期写这个逻辑呢？
+
+**答：**取消`ajax`的请求和`setInterval`其实是类似的，所以建议在`beforeUnmount`中写这个逻辑，当然理论上在`unmount`写也是没问题的。
+
+**问：**在组件初始化阶段，对于发送一些 Ajax 异步请求的逻辑，是应该放在 created 钩子函数中，还是应该放在 `mounted` 钩子函数中？
+
+**答：**其实都可以
+
+因为` created` 和 `mounted` 钩子函数执行的时候都能拿到组件数据，它们执行的顺序虽然有先后，但都会在一个 `Tick` 内执行完毕，而异步请求是有网络耗时的，其耗时远远大于一个 `Tick `的时间。所以，你无论在 `created` 还是在` mounted` 里发请求，都要等请求的响应回来，然后更新数据，再触发组件的重新渲染。
+
+`Vue.js 2.x` 中的 `beforeCreate` 和 `created` 钩子函数可以用` setup` 函数替代。所以，对于组件初始化阶段发送异步请求的逻辑，放在 `setup `函数中、`beforeMount` 钩子函数中或者 `mounted `钩子函数中都可以，它们都可以拿到组件相关的数据。当然，**我更推荐在` setup` 函数中执行，因为从语义化的角度来看这样更合适。**
+
+不过，**如果你想依赖` DOM` 去做一些初始化操作，那就只能把相关逻辑放在 `mounted` 钩子函数中了，这样你才能拿到组件渲染后的 `DOM`。**
+
+## 3.6 依赖注入：子孙组件如何共享数据？
+
+`Vue.js` 为我们提供了很多组件通讯的方式，常见的是父子组件通过` prop `传递数据。但是有时，我们希望能**跨父子组件通讯**，比如，无论组件之间嵌套多少层级，我都希望在后代组件中能访问它们祖先组件的数据。
+
+`Vue.js 2.x `给我们提供了一种依赖注入的解决方案，即在祖先组件提供一个 `provide `选项，举个例子：
+
+```javascript
+// Provider 
+import { provide, ref } from 'vue' 
+export default { 
+  setup() { 
+    const theme = ref('dark') 
+    provide('theme', theme) 
+  } 
+}
+```
+
+然后在子孙组件调用` inject API`：
+
+```javascript
+// Consumer 
+import { inject } from 'vue' 
+export default { 
+  setup() { 
+    const theme = inject('theme', 'light') 
+    return { 
+      theme 
+    } 
+  } 
+}
+```
+
+这里要说明的是，`inject `函数接受第二个参数作为默认值，如果祖先组件上下文没有提供` theme`，则使用这个默认值。
+
+实际上，你可以把依赖注入看作一部分“大范围有效的 `prop`”，而且它的规则更加宽松：**祖先组件不需要知道哪些后代组件在使用它提供的数据，后代组件也不需要知道注入的数据来自哪里**。
+
+那么，依赖注入的背后实现原理是怎样的呢？接下来我们就一起分析吧。
+
+### provide API
+
+我们先来分析 `provide API` 的实现原理：
+
+```javascript
+function provide(key, value) { 
+  let provides = currentInstance.provides 
+  const parentProvides = currentInstance.parent && currentInstance.parent.provides 
+  if (parentProvides === provides) { 
+    provides = currentInstance.provides = Object.create(parentProvides) 
+  } 
+  provides[key] = value 
+}
+```
+
+在创建组件实例的时候，组件实例的 `provides `对象指向父组件实例的 `provides `对象：
+
+```javascript
+const instance = { 
+  // 依赖注入相关 
+  provides: parent ? parent.provides : Object.create(appContext.provides), 
+  // 其它属性 
+  // ... 
+}
+```
+
+这里，我们可以通过一张图直观感受一下它们之间的关系：
+
+![CgqCHl86T3KAQuhfAACt-IfYuPc049](../image/CgqCHl86T3KAQuhfAACt-IfYuPc049.png)
+
+所以在默认情况下，组件实例的 `provides `继承它的父组件，但是当组件实例需要提供自己的值的时候，它使用父级提供的对象创建自己的 `provides `的对象原型。通过这种方式，在` inject `阶段，我们可以非常容易通过原型链查找来自直接父级提供的数据。
+
+另外，如果组件实例提供和父级` provides` 中有相同` key `的数据，是可以覆盖父级提供的数据。举个例子：
+
+```javascript
+import { createApp, h, provide, inject } from 'vue' 
+const ProviderOne = { 
+  setup () { 
+    provide('foo', 'foo') 
+    provide('bar', 'bar') 
+    return () => h(ProviderTwo) 
+  } 
+} 
+const ProviderTwo = { 
+  setup () { 
+    provide('foo', 'fooOverride') 
+    provide('baz', 'baz') 
+    return () => h(Consumer) 
+  } 
+} 
+const Consumer = { 
+  setup () { 
+    const foo = inject('foo') 
+    const bar = inject('bar') 
+    const baz = inject('baz') 
+    return () => h('div', [foo, bar, baz].join('&')) 
+  } 
+} 
+createApp(ProviderOne).mount('#app')
+```
+
+可以看到，这是一个嵌套 `provider` 的情况。根据 `provide` 函数的实现，`ProviderTwo `提供的 `key` 为 `foo` 的 `provider` 会覆盖 `ProviderOne` 提供的 `key` 为 `foo` 的 `provider`，所以最后渲染在 `Consumer` 组件上的就是 `fooOverride&bar&baz` 。
+
+接下来，我们来分析另一个依赖注入的 `API —— inject`。
+
+### `inject API`
+
+我们先来看` inject API `的实现原理：
+
+```javascript
+function inject(key, defaultValue) { 
+  const instance = currentInstance || currentRenderingInstance 
+  if (instance) { 
+    const provides = instance.provides 
+    if (key in provides) { 
+      return provides[key] 
+    } 
+    else if (arguments.length > 1) { 
+      return defaultValue 
+    } 
+    else if ((process.env.NODE_ENV !== 'production')) { 
+      warn(`injection "${String(key)}" not found.`) 
+    } 
+  } 
+}
+```
+
+前文我们已经分析了` provide` 的实现后，在此基础上，理解` inject `的实现就非常简单了。`inject `支持两个参数，第一个参数是 `key`，我们可以访问组件实例中的 `provides `对象对应的 `key`，层层查找父级提供的数据。第二个参数是默认值，如果查找不到数据，则直接返回默认值。
+
+如果既查找不到数据且也没有传入默认值，则在非生产环境下报警告，提示用户找不到这个注入的数据。
+
+到这里我们就掌握了 `provide `和` inject` 的实现原理。但是，我曾经看到过一个问题：**“ `Vue.js 3` 跨组件共享数据，为何要用 `provide/inject` ？直接 `export/import `数据行吗？“**
+
+接下来我们就来探讨依赖注入和模块化共享数据的差异。
+
+### 对比模块化共享数据的方式
+
+我们先来看提问者给出的一个模块化共享数据的示例，即首先在根组件创建一个共享的数据 `sharedData`：
+
+```javascript
+// Root.js 
+export const sharedData = ref('') 
+export default { 
+  name: 'Root', 
+  setup() {
+    // ... 
+  }, 
+  // ... 
+}
+```
+
+然后在子组件中使用 `sharedData`：
+
+```javascript
+import { sharedData } from './Root.js' 
+export default { 
+  name: 'Root', 
+  setup() {
+    // 这里直接使用 sharedData 即可 
+  } 
+}
+```
+
+当然，从这个示例上来看，模块化的方式是可以共享数据，但是 provide 和 inject 与模块化方式有如下几点不同。
+
+- **作用域不同**
+
+对于依赖注入，它的作用域是局部范围，所以你只能把数据注入以这个节点为根的后代组件中，不是这棵子树上的组件是不能访问到该数据的；而对于模块化的方式，它的作用域是全局范围的，你可以在任何地方引用它导出的数据。
+
+- **数据来源不同**
+
+对于依赖注入，后代组件是不需要知道注入的数据来自哪里，只管注入并使用即可；而对于模块化的方式提供的数据，用户必须明确知道这个数据是在哪个模块定义的，从而引入它。
+
+- **上下文不同**
+
+对于依赖注入，提供数据的组件的上下文就是组件实例，而且同一个组件定义是可以有多个组件实例的，我们可以根据不同的组件上下文提供不同的数据给后代组件；而对于模块化提供的数据，它是没有任何上下文的，仅仅是这个模块定义的数据，如果想要根据不同的情况提供不同数据，那么从 `API` 层面设计就需要做更改。
+
+比如允许用户传递一个参数：
+
+```javascript
+export function getShareData(context) { 
+  // 根据不同的 context 参数返回不同的数据 
+}
+```
+
+掌握了这些不同，在不同场景下你就应该知道选择哪种方式提供数据了。
+
+### 依赖注入的缺陷和应用场景
+
+我们再回到依赖注入，它确实提供了一种组件共享的方式，但并非完美的。正因为依赖注入是上下文相关的，所以它会将你应用程序中的组件与它们当前的组织方式耦合起来，这使得重构变得困难。
+
+来回顾一下依赖注入的特点 ：**祖先组件不需要知道哪些后代组件使用它提供的数据**，**后代组件也不需要知道注入的数据来自哪里**。
+
+如果在一次重构中我们不小心挪动了有依赖注入的后代组件的位置，或者是挪动了提供数据的祖先组件的位置，都有可能导致后代组件丢失注入的数据，进而导致应用程序异常。所以，我**并不推荐在普通应用程序代码中使用依赖注入**。
+
+但是我推荐你在组件库的开发中使用，因为对于一个特定组件，它和其嵌套的子组件上下文联系很紧密。
+
+这里来举一个 `Element-UI `组件库` Select `组件的例子：
+
+```vue
+<template> 
+  <el-select v-model="value" placeholder="请选择"> 
+    <el-option 
+      v-for="item in options" 
+      :key="item.value" 
+      :label="item.label" 
+      :value="item.value"> 
+    </el-option> 
+  </el-select> 
+</template> 
+<script> 
+  export default { 
+    data() { 
+      return { 
+        options: [{ 
+          value: '选项1', 
+          label: '黄金糕' 
+        }, { 
+          value: '选项2', 
+          label: '双皮奶' 
+        }, { 
+          value: '选项3', 
+          label: '蚵仔煎' 
+        }, { 
+          value: '选项4', 
+          label: '龙须面' 
+        }, { 
+          value: '选项5', 
+          label: '北京烤鸭' 
+        }], 
+        value: '' 
+      } 
+    } 
+  } 
+</script>
+```
+
+这是 `Select `组件的基础示例，它最终会在页面上渲染成这样：
+
+![Ciqc1F86T9CAGMkuAACL3WKe6QA403](../image/Ciqc1F86T9CAGMkuAACL3WKe6QA403.png)
+
+子组件` ElOption `负责渲染每一个选项，它的内部想要访问最外层的` ElSelect `组件时，就可以通过依赖注入的方式，在 `ElSelect `组件中提供组件的实例：
+
+```javascript
+export default { 
+  provide() { 
+    return { 
+      'select': this 
+    }; 
+  } 
+}
+```
+
+就这样，我们可以在` ElOption` 组件注入这个数据：
+
+```javascript
+export default { 
+  inject: ['select'] 
+}
+```
+
+虽然这些代码还是用的 `Vue.js 2.x `的` Options API `方式，但是依赖注入的思想是不变的。
+
+你可能会问，为什么不在` ElOption` 子组件内通过` this.$parent `访问外层的` ElSelect `组件实例呢？
+
+虽然` this.$parent `指向的是它的父组件实例，在我们这个例子是可以的，但如果组件结构发生了变化呢？
+
+我们再来看另一个 `Select` 组件的例子：
+
+```vue
+<template> 
+  <el-select v-model="value" placeholder="请选择"> 
+    <el-option-group 
+      v-for="group in options" 
+      :key="group.label" 
+      :label="group.label"> 
+      <el-option 
+        v-for="item in group.options" 
+        :key="item.value" 
+        :label="item.label" 
+        :value="item.value"> 
+      </el-option> 
+    </el-option-group> 
+  </el-select> 
+</template> 
+<script> 
+  export default { 
+    data() { 
+      return { 
+        options: [{ 
+          label: '热门城市', 
+          options: [{ 
+            value: 'Shanghai', 
+            label: '上海' 
+          }, { 
+            value: 'Beijing', 
+            label: '北京' 
+          }] 
+        }, { 
+          label: '城市名', 
+          options: [{ 
+            value: 'Chengdu', 
+            label: '成都' 
+          }, { 
+            value: 'Shenzhen', 
+            label: '深圳' 
+          }, { 
+            value: 'Guangzhou', 
+            label: '广州' 
+          }, { 
+            value: 'Dalian', 
+            label: '大连' 
+          }] 
+        }], 
+        value: '' 
+      } 
+    } 
+  } 
+</script>
+```
+
+这是 `Select` 组件的分组示例，最终会在页面上渲染成这样：
+
+![CgqCHl86T-OAVgk-AACFqLBanFk012](../image/CgqCHl86T-OAVgk-AACFqLBanFk012.png)
+
+显然，这里` ElOption `中的` this.$parent` 指向的就不是` ElSelect `组件实例，而是` ElOptionGroup `组件实例。但如果我们用依赖注入的方式，即使结构变了，还是可以在 `ElOption `组件中正确访问到 `ElSelect `的实例。
+
+所以，`this.$parent `是一种强耦合的获取父组件实例方式，非常不利于代码的重构，因为一旦组件层级发生变化，就会产生非预期的后果，所以在平时的开发工作中你应该慎用这个属性。
+
+相反，**在组件库的场景中，依赖注入还是很方便的，除了示例中提供组件实例数据，还可以提供任意类型的数据。因为入口组件和它的相关子组件关联性是很强的，无论后代组件的结构如何变化，最终都会渲染在入口组件的子树上。**
+
+### 总结
+
+通过学习，应该掌握 `Vue.js `依赖注入的实现原理，了解依赖注入的使用场景和它的缺陷。
+
+到目前为止，我们已经学习了` Vue.js 3.0` 提供的所有常用的` Composition API`。可以看到和 `Vue.js 2.x Options API `相比，我们不再是通过编写一些组件配置去描述一个组件，更像是主动调用一些 `API `去编写组件的实现逻辑。
+
+`Vue.js 2.x `中，框架背后帮我们做了很多事情，比如我们在 `data `中定义的变量，在组件实例化阶段会把它们变成响应式的，这个行为是黑盒的，用户是无感知的。反观 `Vue.js 3.0 Composition API`，用户会利用 `reactive` 或者 `ref API `主动去申明一个响应式对象。
+
+所以**通过 `Composition API `去编写组件**，**用户更清楚自己在做什么事情**。
+
+另外，为什么说` Composition API` 比 `mixin `更适合逻辑复用呢？
+
+其实，二者都是把复用的逻辑放在单独的文件中维护。但从使用的方式而言，用户只是在需要混入` mixin `的组件中去申明这个 `mixin`，使用方式如下：
+
+```vue
+<template> 
+  <div> 
+    Mouse position: x {{ x }} / y {{ y }} 
+  </div> 
+</template> 
+<script> 
+import mousePositionMixin from './mouse' 
+export default { 
+  mixins: [mousePositionMixin] 
+} 
+</script>
+```
+
+我们在组件中申明了 `mousePositionMixin`，组件模板中使用的 `x、y `就来源于这个` mixin`，这一切都是 `Vue.js `内部帮我们做的。如果该组件只引入这单个 `mixin`，问题倒不大，但如果这个组件引入的 `mixin` 越来越多，很容易出现命名冲突的情况，以及造成数据来源不清晰等问题。
+
+而我们通过 `Composition API `去编写功能类似的 `hook `函数，使用方式如下：
+
+```vue
+<template> 
+  <div> 
+    Mouse position: x {{ x }} / y {{ y }} 
+  </div> 
+</template> 
+<script> 
+  import useMousePosition from './mouse' 
+  export default { 
+    setup() { 
+      const { x, y } = useMousePosition() 
+      return { x, y } 
+    } 
+  } 
+</script>
+```
+
+我们可以清楚地分辨出模板中使用的 `x、y `是来源于 `useMousePosition` 函数，即便我们引入更多的` hook `函数，也不会出现命名冲突的情况。
+
+`Composition API `在逻辑复用上确实有不错的优势，但是它并非完美的，使用起来会增加代码量。`Composition API `属于` API `的增强，它并不是` Vue.js 3.0 `组件开发的范式，如果你的组件足够简单，还是可 以使用` Options API `的。
+
+### 问题
+
+**问：**如果你想利用依赖注入让整个应用下组件都能共享某个数据，你会怎么做？为什么？
+
+**答：**应该在需要下发的父组件中下发数据，因为在复杂而组件嵌套深度大的情况下，通过上文阐述那样，子组件通过原型链来查找父组件的数据，而查找原型链越长，则查找时间越大，所以原型链应该尽可能短。`Vue`的依赖注入和`react`的`context`一样，都是从父组件下发到子组件中，不论是否嵌套。
 
 # 四、编译过程以及优化
+
+## 4.1 编译和优化：了解编译过程和背后的优化思想
 
 # 五、实用特性的实现原理
 
