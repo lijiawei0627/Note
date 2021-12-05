@@ -11508,4 +11508,1766 @@ function emit(instance, event, ...args) {
 
 # 六、`Vue`内置组件的实现原理
 
+`Vue.js `除了提供了组件化和响应式的能力，以及实用的特性外，还提供了很多好用的内置组件辅助我们的开发，这些极大地丰富了 `Vue.js` 的能力。
+
+那么，既然我们平时经常用到这些内置组件，了解它的实现原理可以让我们更好地运用这些组件，遇到 `Bug` 后可以及时定位问题。同时` Vue.js `内置组件的源码，也是一个很好的编写组件的参考学习范例，我们可以借鉴其中的一些实现为自己所用。
+
+## 6.1 `Teleport `组件：如何脱离当前组件渲染子组件？
+
+我们都知道，`Vue.js` 的核心思想之一是组件化，组件就是 `DOM` 的映射，我们通过嵌套的组件构成了一个组件应用程序的树。
+
+但是，有些时候组件模板的一部分在逻辑上属于该组件，而从技术角度来看，最好将模板的这一部分移动到应用程序之外的其他位置。
+
+### `Teleport` 应用
+
+一个常见的场景是创建一个包含全屏模式的对话框组件。在大多数情况下，我们希望对话框的逻辑存在于组件中，但是对话框的定位 `CSS`是一个很大的问题，它非常容易受到外层父组件的 `CSS` 影响。
+
+假设我们有这样一个` dialog` 组件，用按钮来管理一个` dialog`：
+
+```vue
+<template>
+  <div v-show="visible" class="dialog">
+    <div class="dialog-body">
+      <p>I'm a dialog!</p>
+      <button @click="visible=false">Close</button>
+    </div>
+  </div>
+</template>
+<script>
+  export default {
+    data() {
+      return {
+        visible: false
+      }
+    },
+    methods: {
+      show() {
+        this.visible = true
+      }
+    }
+  }
+</script>
+<style>
+  .dialog {
+    position: absolute;
+    top: 0; right: 0; bottom: 0; left: 0;
+    background-color: rgba(0,0,0,.5);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .dialog .dialog-body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background-color: white;
+    width: 300px;
+    height: 300px;
+    padding: 5px;
+  }
+</style>
+```
+
+然后我们去使用这个组件：
+
+```vue
+<template>
+  <button @click="showDialog">Show dialog</button>
+  <Dialog ref="dialog"></Dialog>
+</template>
+<script>
+  import Dialog from './components/dialog'
+  export default {
+    components: {
+      Dialog
+    },
+    methods: {
+      showDialog() {
+        this.$refs.dialog.show()
+      }
+    }
+  }
+</script>
+```
+
+因为我们的 `dialog` 组件使用的是 `position:absolute `绝对定位的方式，如果它的父级 `DOM` 有 `position` 不为 `static `的布局方式，那么` dialog `的定位就受到了影响，不能按预期渲染了。
+
+所以一种好的解决方案是把 `dialog `组件渲染的这部分 `DOM `挂载到 `body `下面，这样就不会受到父级样式的影响了。
+
+在` Vue.js 2.x `中，想实现上面的需求，你可以依赖开源插件 [portal-vue](https://github.com/LinusBorg/portal-vue) 或者是[vue-create-api](https://github.com/cube-ui/vue-create-api)，感兴趣可以自行了解。
+
+而` Vue.js 3.0` 把这一能力内置到内核中，提供了一个内置组件` Teleport`，它可以轻松帮助我们实现上述需求：
+
+```vue
+<template>
+  <button @click="showDialog">Show dialog</button>
+  <teleport to="body">
+    <Dialog ref="dialog"></Dialog>
+  </teleport>
+</template>
+<script>
+  import Dialog from './components/dialog'
+  export default {
+    components: {
+      Dialog
+    },
+    methods: {
+      showDialog() {
+        this.$refs.dialog.show()
+      }
+    }
+  }
+</script>
+```
+
+`Teleport `组件使用起来非常简单，套在想要在别处渲染的组件或者 `DOM` 节点的外部，然后通过` to `这个 `prop `去指定渲染到的位置，`to `可以是一个` DOM `选择器字符串，也可以是一个 `DOM `节点。
+
+了解了使用方式，接下来，我们就来分析它的实现原理，看看` Teleport` 是如何脱离当前组件渲染子组件的。
+
+### `Teleport` 实现原理
+
+对于这类内置组件，`Vue.js `从编译阶段就做了特殊处理，我们先来看一下前面示例模板编译后的结果：
+
+```JavaScript
+import { createVNode as _createVNode, resolveComponent as _resolveComponent, Teleport as _Teleport, openBlock as _openBlock, createBlock as _createBlock } from "vue"
+export function render(_ctx, _cache, $props, $setup, $data, $options) {
+  const _component_Dialog = _resolveComponent("Dialog")
+  return (_openBlock(), _createBlock("template", null, [
+    _createVNode("button", { onClick: _ctx.showDialog }, "Show dialog", 8 /* PROPS */, ["onClick"]),
+    (_openBlock(), _createBlock(_Teleport, { to: "body" }, [
+      _createVNode(_component_Dialog, { ref: "dialog" }, null, 512 /* NEED_PATCH */)
+    ]))
+  ]))
+}
+```
+
+可以看到，对于 `teleport` 标签，它是直接创建了 `Teleport `内置组件，我们接下来来看它的实现：
+
+```javascript
+const Teleport = {
+  __isTeleport: true,
+  process(n1, n2, container, anchor, parentComponent, parentSuspense, isSVG, optimized, internals) {
+    if (n1 == null) {
+      // 创建逻辑
+    }
+    else {
+      // 更新逻辑
+    }
+  },
+  remove(vnode, { r: remove, o: { remove: hostRemove } }) {
+    // 删除逻辑
+  },
+  move: moveTeleport,
+  hydrate: hydrateTeleport
+}
+```
+
+`Teleport `组件的实现就是一个对象，对外提供了几个方法。其中` process` 方法负责组件的创建和更新逻辑，`remove` 方法负责组件的删除逻辑，接下来我们就从这三个方面来分析` Teleport `的实现原理。
+
+#### `Teleport` 组件创建
+
+回顾组件创建的过程，会经历 `patch` 阶段，我们来回顾它的实现：
+
+```javascript
+const patch = (n1, n2, container, anchor = null, parentComponent = null, parentSuspense = null, isSVG = false, optimized = false) => {
+  if (n1 && !isSameVNodeType(n1, n2)) {
+    // 如果存在新旧节点, 且新旧节点类型不同，则销毁旧节点
+  }
+  const { type, shapeFlag } = n2
+  switch (type) {
+    case Text:
+      // 处理文本节点
+      break
+    case Comment:
+      // 处理注释节点
+      break
+    case Static:
+      // 处理静态节点
+      break
+    case Fragment:
+      // 处理 Fragment 元素
+      break
+    default:
+      if (shapeFlag & 1 /* ELEMENT */) {
+        // 处理普通 DOM 元素
+      }
+      else if (shapeFlag & 6 /* COMPONENT */) {
+        // 处理组件
+      }
+      else if (shapeFlag & 64 /* TELEPORT */) {
+        // 处理 TELEPORT
+        type.process(n1, n2, container, anchor, parentComponent, parentSuspense, isSVG, optimized, internals);
+      }
+      else if (shapeFlag & 128 /* SUSPENSE */) {
+        // 处理 SUSPENSE
+      }
+  }
+}
+```
+
+可以看到，在` patch` 阶段，会判断如果 `type `是一个 `Teleport` 组件，则会执行它的 `process `方法，接下来我们来看 `process` 方法关于 `Teleport` 组件创建部分的逻辑：
+
+```javascript
+function process(n1, n2, container, anchor, parentComponent, parentSuspense, isSVG, optimized, internals) {
+  const { mc: mountChildren, pc: patchChildren, pbc: patchBlockChildren, o: { insert, querySelector, createText, createComment } } = internals
+  const disabled = isTeleportDisabled(n2.props)
+  const { shapeFlag, children } = n2
+  if (n1 == null) {
+    // 在主视图里插入注释节点或者空白文本节点
+    const placeholder = (n2.el = (process.env.NODE_ENV !== 'production')
+      ? createComment('teleport start')
+      : createText(''))
+    const mainAnchor = (n2.anchor = (process.env.NODE_ENV !== 'production')
+      ? createComment('teleport end')
+      : createText(''))
+    insert(placeholder, container, anchor)
+    insert(mainAnchor, container, anchor)
+    // 获取目标移动的 DOM 节点
+    const target = (n2.target = resolveTarget(n2.props, querySelector))
+    const targetAnchor = (n2.targetAnchor = createText(''))
+    if (target) {
+      insert(targetAnchor, target)
+    }
+    else if ((process.env.NODE_ENV !== 'production')) {
+      // 查找不到 target 则报警告
+      warn('Invalid Teleport target on mount:', target, `(${typeof target})`)
+    }
+    const mount = (container, anchor) => {
+      if (shapeFlag & 16 /* ARRAY_CHILDREN */) {
+        // 挂载子节点
+        mountChildren(children, container, anchor, parentComponent, parentSuspense, isSVG, optimized)
+      }
+    }
+    if (disabled) {
+      // disabled 情况就在原先的位置挂载
+      mount(container, mainAnchor)
+    }
+    else if (target) {
+      // 挂载到 target 的位置
+      mount(target, targetAnchor)
+    }
+  }
+}
+```
+
+**`Teleport `组件创建部分主要分为三个步骤，第一步在主视图里插入注释节点或者空白文本节点，第二步获取目标元素节点，第三步往目标元素插入 `Teleport `组件的子节点。**
+
+1. 我们先来看第一步，会在非生产环境往 `Teleport `组件原本的位置插入注释节点，在生产环境插入空白文本节点。在开发环境中，组件的 `el `对象指向` teleport start `注释节点，组件的` anchor `对象指向`teleport end `注释节点。
+2. 接着看第二步，会通过` resolveTarget `方法从` props `中的` to `属性以及` DOM `选择器拿到对应要移动到的目标元素 `target`。
+3. 最后看第三步，会判断` disabled `变量的值，它是在` Teleport` 组件中通过` prop` 传递的，如果 `disabled` 为` true`，那么子节点仍然挂载到` Teleport` 原本视图的位置，如果为` false`，那么子节点则挂载到 `target` 目标元素位置。
+
+至此，我们就已经实现了需求，把 `Teleport `包裹的子节点脱离了当前组件，渲染到目标位置，是不是很简单呢？
+
+#### `Teleport `组件更新
+
+当然，`Teleport `包裹的子节点渲染后并不是一成不变的，当组件发生更新的时候，仍然会执行 `patch` 逻辑走到` Teleport` 的 `process` 方法，去处理 `Teleport `组件的更新，我们来看一下这部分的实现：
+```javascript
+function process(n1, n2, container, anchor, parentComponent, parentSuspense, isSVG, optimized, internals) {
+  const { mc: mountChildren, pc: patchChildren, pbc: patchBlockChildren, o: { insert, querySelector, createText, createComment } } = internals
+  const disabled = isTeleportDisabled(n2.props)
+  const { shapeFlag, children } = n2
+  if (n1 == null) {
+    // 创建逻辑
+  }
+  else {
+    n2.el = n1.el
+    const mainAnchor = (n2.anchor = n1.anchor)
+    const target = (n2.target = n1.target)
+    const targetAnchor = (n2.targetAnchor = n1.targetAnchor)
+    // 之前是不是 disabled 状态
+    const wasDisabled = isTeleportDisabled(n1.props)
+    const currentContainer = wasDisabled ? container : target
+    const currentAnchor = wasDisabled ? mainAnchor : targetAnchor
+    // 更新子节点
+    if (n2.dynamicChildren) {
+      patchBlockChildren(n1.dynamicChildren, n2.dynamicChildren, currentContainer, parentComponent, parentSuspense, isSVG)
+      if (n2.shapeFlag & 16 /* ARRAY_CHILDREN */) {
+        const oldChildren = n1.children
+        const children = n2.children
+        for (let i = 0; i < children.length; i++) {
+          if (!children[i].el) {
+            children[i].el = oldChildren[i].el
+          }
+        }
+      }
+    }
+    else if (!optimized) {
+      patchChildren(n1, n2, currentContainer, currentAnchor, parentComponent, parentSuspense, isSVG)
+    }
+    if (disabled) {
+      if (!wasDisabled) {
+        // enabled -> disabled
+        // 把子节点移动回主容器
+        moveTeleport(n2, container, mainAnchor, internals, 1 /* TOGGLE */)
+      }
+    }
+    else {
+      if ((n2.props && n2.props.to) !== (n1.props && n1.props.to)) {
+        // 目标元素改变
+        const nextTarget = (n2.target = resolveTarget(n2.props, querySelector))
+        if (nextTarget) {
+          // 移动到新的目标元素
+          moveTeleport(n2, nextTarget, null, internals, 0 /* TARGET_CHANGE */)
+        }
+        else if ((process.env.NODE_ENV !== 'production')) {
+          warn('Invalid Teleport target on update:', target, `(${typeof target})`)
+        }
+      }
+      else if (wasDisabled) {
+        // disabled -> enabled
+        // 移动到目标元素位置
+        moveTeleport(n2, target, targetAnchor, internals, 1 /* TOGGLE */)
+      }
+    }
+  }
+}
+```
+`Teleport` 组件更新无非就是做几件事情：更新子节点，处理 `disabled` 属性变化的情况，处理 `to `属性变化的情况。
+
+首先，是更新 `Teleport` 组件的子节点，这里更新分为优化更新和普通的全量比对更新两种情况，之前分析过，就不再赘述了。
+
+接着，是判断 `Teleport` 组件新节点配置 `disabled` 属性的情况，如果满足新节点 `disabled` 为 `true`，且旧节点的 `disabled` 为 `false` 的话，说明我们需要把 `Teleport` 的子节点从目标元素内部移回到主视图内部了。
+
+如果新节点 `disabled` 为` false`，那么先通过 `to `属性是否改变来判断目标元素 `target `有没有变化，如果有变化，则把` Teleport` 的子节点移动到新的` target` 内部；如果目标元素没变化，则判断旧节点的 `disabled` 是否为 `true`，如果是则把 `Teleport` 的子节点从主视图内部移动到目标元素内部了。
+
+#### `Teleport` 组件移除
+
+前面我们学过，当组件移除的时候会执行 `unmount` 方法，它的内部会判断如果移除的组件是一个 `Teleport` 组件，就会执行组件的 `remove `方法：
+```javascript
+if (shapeFlag & 64 /* TELEPORT */) {
+  vnode.type.remove(vnode, internals);
+}
+if (doRemove) {
+  remove(vnode);
+}
+```
+我们来看一下它的实现：
+```javascript
+function remove(vnode, { r: remove, o: { remove: hostRemove } }) {
+  const { shapeFlag, children, anchor } = vnode
+  hostRemove(anchor)
+  if (shapeFlag & 16 /* ARRAY_CHILDREN */) {
+    for (let i = 0; i < children.length; i++) {
+      remove(children[i])
+    }
+  }
+}
+```
+`Teleport `的 `remove `方法实现很简单，首先通过` hostRemove` 移除主视图渲染的锚点 `teleport start` 注释节点，然后再去遍历 `Teleport `的子节点执行` remove `移除。
+
+执行完 `Teleport` 的 `remove` 方法，会继续执行` remove` 方法移除 `Teleport` 主视图的元素 `teleport end `注释节点，至此，`Teleport` 组件完成了移除。
+
+#### 总结
+
+好的，到这里我们这一节的学习也要结束啦，通过这节课的学习，你应该了解了` Teleport` 是如何把内部的子元素渲染到目标元素上，并且对 `Teleport `组件是如何创建，更新和移除的有所理解。
+
+#### 问题
+
+**问：**作为` Vue.js `的内置组件，它需要像用户自定义组件那样先注册后再使用吗？如果不用又是为什么呢？
+
+**答：**在模板语法中不需要像用户自定义组件那样主动引入，编译器会自动处理。在 `render` 函数写法中需要从 `vue` 中引入使用。`teleport` 与其说是内置组件不如说是内置类型，有和常规`Component` 同一级别的特定处理模式，在源码中和`Component` 是分开处理的。
+
+## 6.2 `KeepAlive` 组件：如何让组件在内存中缓存和调度？
+通过前面的学习，我们了解到多个平行组件条件渲染，当满足条件的时候会触发某个组件的挂载，而已渲染的组件当条件不满足的时候会触发组件的卸载，举个例子：
+```vue
+<comp-a v-if="flag"></comp-a>
+<comp-b v-else></comp-b>
+<button @click="flag=!flag">toggle</button>
+```
+这里，当 `flag` 为 `true` 的时候，就会触发组件` A` 的渲染，然后我们点击按钮把 `flag` 修改为 `false`，又会触发组件` A` 的卸载，及组件 `B` 的渲染。
+
+根据我们前面的学习，我们也知道组件的挂载和卸载都是一个递归过程，会有一定的性能损耗，对于这种可能会频繁切换的组件，我们有没有办法减少这其中的性能损耗呢？
+
+答案是有的，`Vue.js `提供了内置组件 `KeepAlive`，我们可以这么使用它：
+```vue
+<keep-alive>
+  <comp-a v-if="flag"></comp-a>
+  <comp-b v-else></comp-b>
+  <button @click="flag=!flag">toggle</button>
+</keep-alive>
+```
+我们可以用模板导出工具看一下它编译后的 `render` 函数：
+```javascript
+import { resolveComponent as _resolveComponent, createVNode as _createVNode, createCommentVNode as _createCommentVNode, KeepAlive as _KeepAlive, openBlock as _openBlock, createBlock as _createBlock } from "vue"
+export function render(_ctx, _cache, $props, $setup, $data, $options) {
+  const _component_comp_a = _resolveComponent("comp-a")
+  const _component_comp_b = _resolveComponent("comp-b")
+  return (_openBlock(), _createBlock(_KeepAlive, null, [
+    (_ctx.flag)
+      ? _createVNode(_component_comp_a, { key: 0 })
+      : _createVNode(_component_comp_b, { key: 1 }),
+    _createVNode("button", {
+      onClick: $event => (_ctx.flag=!_ctx.flag)
+    }, "toggle", 8 /* PROPS */, ["onClick"])
+  ], 1024 /* DYNAMIC_SLOTS */))
+}
+```
+我们使用了 `KeepAlive` 组件对这两个组件做了一层封装，**`KeepAlive` 是一个抽象组件，它并不会渲染成一个真实的 `DOM`，只会渲染内部包裹的子节点，并且让内部的子组件在切换的时候，不会走一整套递归卸载和挂载 `DOM`的流程，从而优化了性能。**
+
+那么它具体是怎么做的呢？我们再来看 `KeepAlive` 组件的定义：
+```javascript
+const KeepAliveImpl = {
+  name: `KeepAlive`,
+  __isKeepAlive: true,
+  inheritRef: true,
+  props: {
+    include: [String, RegExp, Array],
+    exclude: [String, RegExp, Array],
+    max: [String, Number]
+  },
+  setup(props, { slots }) {
+    const cache = new Map()
+    const keys = new Set()
+    let current = null
+    const instance = getCurrentInstance()
+    const parentSuspense = instance.suspense
+    const sharedContext = instance.ctx
+    const { renderer: { p: patch, m: move, um: _unmount, o: { createElement } } } = sharedContext
+    const storageContainer = createElement('div')
+    sharedContext.activate = (vnode, container, anchor, isSVG, optimized) => {
+      const instance = vnode.component
+      move(vnode, container, anchor, 0 /* ENTER */, parentSuspense)
+      patch(instance.vnode, vnode, container, anchor, instance, parentSuspense, isSVG, optimized)
+      queuePostRenderEffect(() => {
+        instance.isDeactivated = false
+        if (instance.a) {
+          invokeArrayFns(instance.a)
+        }
+        const vnodeHook = vnode.props && vnode.props.onVnodeMounted
+        if (vnodeHook) {
+          invokeVNodeHook(vnodeHook, instance.parent, vnode)
+        }
+      }, parentSuspense)
+    }
+    sharedContext.deactivate = (vnode) => {
+      const instance = vnode.component
+      move(vnode, storageContainer, null, 1 /* LEAVE */, parentSuspense)
+      queuePostRenderEffect(() => {
+        if (instance.da) {
+          invokeArrayFns(instance.da)
+        }
+        const vnodeHook = vnode.props && vnode.props.onVnodeUnmounted
+        if (vnodeHook) {
+          invokeVNodeHook(vnodeHook, instance.parent, vnode)
+        }
+        instance.isDeactivated = true
+      }, parentSuspense)
+    }
+    function unmount(vnode) {
+      resetShapeFlag(vnode)
+      _unmount(vnode, instance, parentSuspense)
+    }
+    function pruneCache(filter) {
+      cache.forEach((vnode, key) => {
+        const name = getName(vnode.type)
+        if (name && (!filter || !filter(name))) {
+          pruneCacheEntry(key)
+        }
+      })
+    }
+    function pruneCacheEntry(key) {
+      const cached = cache.get(key)
+      if (!current || cached.type !== current.type) {
+        unmount(cached)
+      }
+      else if (current) {
+        resetShapeFlag(current)
+      }
+      cache.delete(key)
+      keys.delete(key)
+    }
+    watch(() => [props.include, props.exclude], ([include, exclude]) => {
+      include && pruneCache(name => matches(include, name))
+      exclude && !pruneCache(name => matches(exclude, name))
+    })
+    let pendingCacheKey = null
+    const cacheSubtree = () => {
+      if (pendingCacheKey != null) {
+        cache.set(pendingCacheKey, instance.subTree)
+      }
+    }
+    onBeforeMount(cacheSubtree)
+    onBeforeUpdate(cacheSubtree)
+    onBeforeUnmount(() => {
+      cache.forEach(cached => {
+        const { subTree, suspense } = instance
+        if (cached.type === subTree.type) {
+          resetShapeFlag(subTree)
+          const da = subTree.component.da
+          da && queuePostRenderEffect(da, suspense)
+          return
+        }
+        unmount(cached)
+      })
+    })
+    return () => {
+      pendingCacheKey = null
+      if (!slots.default) {
+        return null
+      }
+      const children = slots.default()
+      let vnode = children[0]
+      if (children.length > 1) {
+        if ((process.env.NODE_ENV !== 'production')) {
+          warn(`KeepAlive should contain exactly one component child.`)
+        }
+        current = null
+        return children
+      }
+      else if (!isVNode(vnode) ||
+        !(vnode.shapeFlag & 4 /* STATEFUL_COMPONENT */)) {
+        current = null
+        return vnode
+      }
+      const comp = vnode.type
+      const name = getName(comp)
+      const { include, exclude, max } = props
+      if ((include && (!name || !matches(include, name))) ||
+        (exclude && name && matches(exclude, name))) {
+        return (current = vnode)
+      }
+      const key = vnode.key == null ? comp : vnode.key
+      const cachedVNode = cache.get(key)
+      if (vnode.el) {
+        vnode = cloneVNode(vnode)
+      }
+      pendingCacheKey = key
+      if (cachedVNode) {
+        vnode.el = cachedVNode.el
+        vnode.component = cachedVNode.component
+        vnode.shapeFlag |= 512 /* COMPONENT_KEPT_ALIVE */
+        keys.delete(key)
+        keys.add(key)
+      }
+      else {
+        keys.add(key)
+        if (max && keys.size > parseInt(max, 10)) {
+          pruneCacheEntry(keys.values().next().value)
+        }
+      }
+      vnode.shapeFlag |= 256 /* COMPONENT_SHOULD_KEEP_ALIVE */
+      current = vnode
+      return vnode
+    }
+  }
+}
+```
+
+**把 `KeepAlive` 的实现拆成四个部分：组件的渲染、缓存的设计、`Props `设计和组件的卸载。**接下来，我们就来依次分析它们的实现。分析的过程中，我会结合前面的示例讲解，希望你也能够运行这个示例，并加入一些断点调试。
+
+### 组件的渲染
+
+首先，我们来看组件的渲染部分，可以看到 `KeepAlive `组件使用了 `Composition API` 的方式去实现，我们已经学习过了，当 `setup` 函数返回的是一个函数，那么这个函数就是组件的渲染函数，我们来看它的实现：
+```javascript
+return () => {
+  pendingCacheKey = null
+  if (!slots.default) {
+    return null
+  }
+  const children = slots.default()
+  let vnode = children[0]
+  if (children.length > 1) {
+    if ((process.env.NODE_ENV !== 'production')) {
+      warn(`KeepAlive should contain exactly one component child.`)
+    }
+    current = null
+    return children
+  }
+  else if (!isVNode(vnode) ||
+    !(vnode.shapeFlag & 4 /* STATEFUL_COMPONENT */)) {
+    current = null
+    return vnode
+  }
+  const comp = vnode.type
+  const name = getName(comp)
+  const { include, exclude, max } = props
+  if ((include && (!name || !matches(include, name))) ||
+    (exclude && name && matches(exclude, name))) {
+    return (current = vnode)
+  }
+  const key = vnode.key == null ? comp : vnode.key
+  const cachedVNode = cache.get(key)
+  if (vnode.el) {
+    vnode = cloneVNode(vnode)
+  }
+  pendingCacheKey = key
+  if (cachedVNode) {
+    vnode.el = cachedVNode.el
+    vnode.component = cachedVNode.component
+    // 避免 vnode 节点作为新节点被挂载
+    vnode.shapeFlag |= 512 /* COMPONENT_KEPT_ALIVE */
+    // 让这个 key 始终新鲜
+    keys.delete(key)
+    keys.add(key)
+  }
+  else {
+    keys.add(key)
+    // 删除最久不用的 key，符合 LRU 思想
+    if (max && keys.size > parseInt(max, 10)) {
+      pruneCacheEntry(keys.values().next().value)
+    }
+  }
+  // 避免 vnode 被卸载
+  vnode.shapeFlag |= 256 /* COMPONENT_SHOULD_KEEP_ALIVE */
+  current = vnode
+  return vnode
+}
+```
+函数先从 `slots.default()` 拿到子节点 `children`，它就是 `KeepAlive` 组件包裹的子组件，由于 `KeepAlive` 只能渲染单个子节点，所以当 `children` 长度大于 1 的时候会报警告。
+
+我们先不考虑缓存部分，`KeepAlive` 渲染的 `vnode` 就是子节点 `children` 的第一个元素，它是函数的返回值。
+
+因此我们说 `KeepAlive` 是抽象组件，它本身不渲染成实体节点，而是渲染它的第一个子节点。
+
+当然，没有缓存的 `KeepAlive` 组件是没有灵魂的，这种抽象的封装也是没有任何意义的，所以接下来我们重点来看它的缓存是如何设计的。
+
+### 缓存的设计
+
+我们先来思考一件事情，我们需要缓存什么？
+
+**组件的递归 `patch`过程，主要就是为了渲染` DOM`，显然这个递归过程是有一定的性能耗时的，既然目标是为了渲染 `DOM`，那么我们是不是可以把 `DOM` 缓存了，这样下一次渲染我们就可以直接从缓存里获取` DOM` 并渲染，就不需要每次都重新递归渲染了。**
+
+实际上 `KeepAlive`组件就是这么做的，它注入了两个钩子函数，`onBeforeMount` 和 `onBeforeUpdate`，在这两个钩子函数内部都执行了 `cacheSubtree` 函数来做缓存：
+
+```javascript
+const cacheSubtree = () => {
+  if (pendingCacheKey != null) {
+    cache.set(pendingCacheKey, instance.subTree)
+  }
+}
+```
+
+由于 `pendingCacheKey` 是在 `KeepAlive `的 `render `函数中才会被赋值，所以` KeepAlive `首次进入` onBeforeMount` 钩子函数的时候是不会缓存的。
+
+然后 `KeepAlive` 执行 `render` 的时候，`pendingCacheKey`会被赋值为 `vnode.key`，我们回过头看一下示例渲染后的模板：
+
+```javascript
+import { resolveComponent as _resolveComponent, createVNode as _createVNode, createCommentVNode as _createCommentVNode, KeepAlive as _KeepAlive, openBlock as _openBlock, createBlock as _createBlock } from "vue"
+export function render(_ctx, _cache, $props, $setup, $data, $options) {
+  const _component_comp_a = _resolveComponent("comp-a")
+  const _component_comp_b = _resolveComponent("comp-b")
+  return (_openBlock(), _createBlock(_KeepAlive, null, [
+    (_ctx.flag)
+      ? _createVNode(_component_comp_a, { key: 0 })
+      : _createVNode(_component_comp_b, { key: 1 }),
+    _createVNode("button", {
+      onClick: $event => (_ctx.flag=!_ctx.flag)
+    }, "toggle", 8 /* PROPS */, ["onClick"])
+  ], 1024 /* DYNAMIC_SLOTS */))
+}
+```
+
+我们注意到 `KeepAlive` 的子节点创建的时候都添加了一个 `key` 的 `prop`，它就是专门为 `KeepAlive` 的缓存设计的，这样每一个子节点都能有一个唯一的 `key`。
+
+页面首先渲染 `A` 组件，接着当我们点击按钮的时候，修改了 `flag` 的值，会触发当前组件的重新渲染，进而也触发了 `KeepAlvie` 组件的重新渲染，在组件重新渲染前，会执行 `onBeforeUpdate` 对应的钩子函数，也就再次执行到 `cacheSubtree` 函数中。
+
+这个时候 `pendingCacheKey` 对应的是 `A` 组件 `vnode` 的` key`，`instance.subTree` 对应的也是 `A` 组件的渲染子树，所以 `KeepAlive` 每次在更新前，会缓存前一个组件的渲染子树。
+
+> 经过前面的分析，我认为 `onBeforeMount` 的钩子函数注入似乎并没有必要，我在源码中删除后再跑 `Vue.js 3.0` 的单测也能通过，如果你有不同意见，欢迎在留言区与我分享。
+
+这个时候渲染了 `B` 组件，当我们再次点击按钮，修改 `flag` 值的时候，会再次触发`KeepAlvie` 组件的重新渲染，当然此时执行 `onBeforeUpdate` 钩子函数缓存的就是` B` 组件的渲染子树了。
+
+接着再次执行 `KeepAlive `组件的 `render` 函数，此时就可以从缓存中根据 `A` 组件的`key` 拿到对应的渲染子树 `cachedVNode` 的了，然后执行如下逻辑：
+```javascript
+if (cachedVNode) {
+  vnode.el = cachedVNode.el
+  vnode.component = cachedVNode.component
+  // 避免 vnode 节点作为新节点被挂载
+  vnode.shapeFlag |= 512 /* COMPONENT_KEPT_ALIVE */
+  // 让这个 key 始终新鲜
+  keys.delete(key)
+  keys.add(key)
+}
+else {
+  keys.add(key)
+  // 删除最久不用的 key，符合 LRU 思想
+  if (max && keys.size > parseInt(max, 10)) {
+    pruneCacheEntry(keys.values().next().value)
+  }
+}
+```
+有了缓存的渲染子树后，我们就可以直接拿到它对应的` DOM` 以及组件实例 `component`，赋值给 `KeepAlive` 的 `vnode`，并更新 `vnode.shapeFlag`，以便后续 `patch` 阶段使用。
+
+>注意，这里有一个额外的缓存管理的逻辑，我们稍后讲 `Props` 设计的时候会详细说。
+
+那么，对于 `KeepAlive` 组件的渲染来说，有缓存和没缓存在 `patch` 阶段有何区别呢，由于 `KeepAlive` 缓存的都是有状态的组件 `vnode`，我们再来回顾一下 `patchComponent` 函数的实现：
+
+```javascript
+const processComponent = (n1, n2, container, anchor, parentComponent, parentSuspense, isSVG, optimized) => {
+  if (n1 == null) {
+    // 处理 KeepAlive 组件
+    if (n2.shapeFlag & 512 /* COMPONENT_KEPT_ALIVE */) {
+      parentComponent.ctx.activate(n2, container, anchor, isSVG, optimized)
+    }
+    else {
+      // 挂载组件
+      mountComponent(n2, container, anchor, parentComponent, parentSuspense, isSVG, optimized)
+    }
+  }
+  else {
+    // 更新组件
+  }
+}
+```
+
+`KeepAlive` 首次渲染某一个子节点时，和正常的组件节点渲染没有区别，但是有缓存后，由于标记了 `shapeFlag`，所以在执行`processComponent`函数时会走到处理 `KeepAlive` 组件的逻辑中，执行 `KeepAlive `组件实例上下文中的 `activate` 函数，我们来看它的实现：
+```javascript
+sharedContext.activate = (vnode, container, anchor, isSVG, optimized) => {
+  const instance = vnode.component
+  move(vnode, container, anchor, 0 /* ENTER */, parentSuspense)
+  patch(instance.vnode, vnode, container, anchor, instance, parentSuspense, isSVG, optimized)
+  queuePostRenderEffect(() => {
+    instance.isDeactivated = false
+    if (instance.a) {
+      invokeArrayFns(instance.a)
+    }
+    const vnodeHook = vnode.props && vnode.props.onVnodeMounted
+    if (vnodeHook) {
+      invokeVNodeHook(vnodeHook, instance.parent, vnode)
+    }
+  }, parentSuspense)
+}
+```
+可以看到，由于此时已经能从 `vnode.el` 中拿到缓存的 `DOM `了，所以可以直接调用 `move` 方法挂载节点，然后执行 `patch` 方法更新组件，以防止 `props `发生变化的情况。
+
+接下来，就是通过 `queuePostRenderEffect` 的方式，在组件渲染完毕后，执行子节点组件定义的 `activated` 钩子函数。
+
+至此，我们就了解了 `KeepAlive `的缓存设计，`KeepAlive` 包裹的子组件在其渲染后，下一次 `KeepAlive` 组件更新前会被缓存，缓存后的子组件在下一次渲染的时候直接从缓存中拿到子树 `vnode` 以及对应的 `DOM` 元素，直接渲染即可。
+
+当然，光有缓存还不够灵活，有些时候我们想针对某些子组件缓存，某些子组件不缓存，另外，我们还想限制 `KeepAlive` 组件的最大缓存个数，怎么办呢？`KeepAlive` 设计了几个 `Props`，允许我们可以对上述需求做配置。
+
+### `Props` 设计
+
+`KeepAlive` 一共支持了三个 `Props`，分别是 `include、exclude` 和` max`。
+
+```javascript
+props: {
+  include: [String, RegExp, Array],
+  exclude: [String, RegExp, Array],
+  max: [String, Number]
+}
+```
+
+`include` 和 `exclude `对应的实现逻辑如下：
+
+```javascript
+const { include, exclude, max } = props
+if ((include && (!name || !matches(include, name))) ||
+  (exclude && name && matches(exclude, name))) {
+  return (current = vnode)
+}
+```
+
+很好理解，如果子组件名称不匹配` include` 的 `vnode` ，以及子组件名称匹配 `exclude 的 vnode `都不应该被缓存，而应该直接返回。
+
+当然，由于` props` 是响应式的，在 `include `和 `exclude props `发生变化的时候也应该有相关的处理逻辑，如下：
+
+```javascript
+watch(() => [props.include, props.exclude], ([include, exclude]) => {
+  include && pruneCache(name => matches(include, name))
+  exclude && !pruneCache(name => matches(exclude, name))
+})
+```
+
+监听的逻辑也很简单，当 `include `发生变化的时候，从缓存中删除那些` name `不匹配 `include` 的 `vnode` 节点；当 `exclude` 发生变化的时候，从缓存中删除那些 `name` 匹配 `exclude` 的 `vnode` 节点。
+
+除了` include `和 `exclude`之外，`KeepAlive` 组件还支持了 `max prop` 来控制缓存的最大个数。
+
+由于缓存本身就是占用了内存，所以有些场景我们希望限制 `KeepAlive` 缓存的个数，这时我们可以通过 `max` 属性来控制，当缓存新的 `vnode` 的时候，会做一定程度的缓存管理，如下：
+
+```javascript
+keys.add(key)
+// 删除最久不用的 key，符合 LRU 思想
+if (max && keys.size > parseInt(max, 10)) {
+  pruneCacheEntry(keys.values().next().value)
+}
+```
+由于新的缓存 `key` 都是在 `keys` 的结尾添加的，所以当缓存的个数超过 `max` 的时候，就从最前面开始删除，符合 `LRU` 最近最少使用的算法思想。
+
+### 组件的卸载
+
+了解完 `KeepAlive` 组件的渲染、缓存和 `Props` 设计后，我们接着来看 `KeepAlive` 组件的卸载过程。
+
+我们先来分析 `KeepAlive` 内部包裹的子组件的卸载过程，前面我们提到 `KeepAlive` 渲染的过程实际上是渲染它的第一个子组件节点，并且会给渲染的 `vnode` 打上如下标记：
+
+```javascript
+vnode.shapeFlag |= 256 /* COMPONENT_SHOULD_KEEP_ALIVE */
+```
+
+加上这个 `shapeFlag `有什么用呢，我们结合前面的示例来分析。
+
+```vue
+<keep-alive>
+  <comp-a v-if="flag"></comp-a>
+  <comp-b v-else></comp-b>
+  <button @click="flag=!flag">toggle</button>
+</keep-alive>
+```
+
+当 `flag` 为 `true` 的时候，渲染 `A` 组件，然后我们点击按钮修改 `flag `的值，会触发` KeepAlive` 组件的重新渲染，会先执行 `BeforeUpdate `钩子函数缓存 `A` 组件对应的渲染子树` vnode`，然后再执行 `patch` 更新子组件。
+
+这个时候会执行` B` 组件的渲染，以及 `A `组件的卸载，我们知道组件的卸载会执行 `unmount `方法，其中有一个关于` KeepAlive` 组件的逻辑，如下：
+
+```javascript
+const unmount = (vnode, parentComponent, parentSuspense, doRemove = false) => {
+  const { shapeFlag  } = vnode
+  if (shapeFlag & 256 /* COMPONENT_SHOULD_KEEP_ALIVE */) {
+    parentComponent.ctx.deactivate(vnode)
+    return
+  }
+  // 卸载组件
+}
+```
+
+如果 `shapeFlag`满足 `KeepAlive` 的条件，则执行相应的 `deactivate` 函数，它的定义如下：
+
+```javascript
+sharedContext.deactivate = (vnode) => {
+  const instance = vnode.component
+  move(vnode, storageContainer, null, 1 /* LEAVE */, parentSuspense)
+  queuePostRenderEffect(() => {
+    if (instance.da) {
+      invokeArrayFns(instance.da)
+    }
+    const vnodeHook = vnode.props && vnode.props.onVnodeUnmounted
+    if (vnodeHook) {
+      invokeVNodeHook(vnodeHook, instance.parent, vnode)
+    }
+    instance.isDeactivated = true
+  }, parentSuspense)
+}
+```
+
+函数首先通过 `move` 方法从` DOM` 树中移除该节点，接着通过 `queuePostRenderEffect` 的方式执行定义的 `deactivated `钩子函数。
+
+注意，这里我们只是移除了 `DOM`，并没有真正意义上的执行子组件的整套卸载流程。
+
+那么除了点击按钮引起子组件的卸载之外，当`KeepAlive `所在的组件卸载时，由于卸载的递归特性，也会触发` KeepAlive `组件的卸载，在卸载的过程中会执行 `onBeforeUnmount` 钩子函数，如下：
+
+```javascript
+onBeforeUnmount(() => {
+  cache.forEach(cached => {
+    const { subTree, suspense } = instance
+    if (cached.type === subTree.type) {
+      resetShapeFlag(subTree)
+      const da = subTree.component.da
+      da && queuePostRenderEffect(da, suspense)
+      return
+    }
+    unmount(cached)
+  })
+})  
+```
+
+它会遍历所有缓存的 `vnode`，并且比对缓存的 `vnode `是不是当前 `KeepAlive `组件渲染的` vnode`。
+
+如果是的话，则执行 `resetShapeFlag` 方法，它的作用是修改 `vnode` 的 `shapeFlag`，不让它再被当作一个 `KeepAlive` 的 `vnode` 了，这样就可以走正常的卸载逻辑。接着通过 `queuePostRenderEffect` 的方式执行子组件的 `deactivated` 钩子函数。
+
+如果不是，则执行 `unmount` 方法重置 `shapeFlag `以及执行缓存 `vnode` 的整套卸载流程。
+
+### 总结
+
+你应该明白 `KeepAlive` 实际上是一个抽象节点，渲染的是它的第一个子节点，并了解它的缓存设计、`Props` 设计和卸载过程。
+
+### 问题
+
+**问：**我们是如何给组件注册 `activated` 和 `deactivated` 钩子函数的，它们的执行和其他钩子函数比，有什么不同？
+
+**答：**
+
+## 6.3 `Transition` 组件：过渡动画的实现原理是怎样的？
+
+作为一名前端开发工程师，平时开发页面少不了要写一些过渡动画，通常可以用` CSS` 脚本来实现，当然一些时候也会使用 `JavaScript` 操作 `DOM `来实现动画。那么，如果我们使用 `Vue.js `技术栈，有没有好的实现动画的方式呢？
+
+答案是肯定的——有，`Vue.js` 提供了内置的 `Transition `组件，它可以让我们轻松实现动画过渡效果。
+
+### `Transition` 组件的用法
+
+> 如果你还不太熟悉 `Transition` 组件的使用，我建议你先去看它的[官网文档](https://v3.vuejs.org/guide/transitions-enterleave.html)。
+
+`Transition` 组件通常有三类用法：`CSS` 过渡，`CSS` 动画和` JavaScript `钩子。我们分别用几个示例来说明，这里我希望你可以敲代码运行感受一下。
+
+首先来看 `CSS `过渡：
+
+```vue
+<template>
+  <div class="app">
+    <button @click="show = !show">
+      Toggle render
+    </button>
+    <transition name="fade">
+      <p v-if="show">hello</p>
+    </transition>
+  </div>
+</template>
+<script>
+  export default {
+    data() {
+      return {
+        show: true
+      }
+    }
+  }
+</script>
+<style>
+  .fade-enter-active,
+  .fade-leave-active {
+    transition: opacity 0.5s ease;
+  }
+  .fade-enter-from,
+  .fade-leave-to {
+    opacity: 0;
+  }
+</style>
+```
+
+`CSS` 过渡主要定义了一些过渡的` CSS `样式，当我们点击按钮切换文本显隐的时候，就会应用这些 `CSS `样式，实现过渡效果。
+
+接着来看` CSS `动画：
+
+```vue
+<template>
+  <div class="app">
+    <button @click="show = !show">Toggle show</button>
+    <transition name="bounce">
+      <p v-if="show">Vue is an awesome front-end MVVM framework. We can use it to build multiple apps.</p>
+    </transition>
+  </div>
+</template>
+<script>
+  export default {
+    data() {
+      return {
+        show: true
+      }
+    }
+  }
+</script>
+<style>
+  .bounce-enter-active {
+    animation: bounce-in 0.5s;
+  }
+  .bounce-leave-active {
+    animation: bounce-in 0.5s reverse;
+  }
+  @keyframes bounce-in {
+    0% {
+      transform: scale(0);
+    }
+    50% {
+      transform: scale(1.5);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+</style>
+```
+
+和 `CSS `过渡类似，`CSS `动画主要定义了一些动画的` CSS `样式，当我们去点击按钮切换文本显隐的时候，就会应用这些` CSS` 样式，实现动画效果。
+
+最后，是`JavaScript `钩子：
+
+```vue
+<template>
+  <div class="app">
+    <button @click="show = !show">
+      Toggle render
+    </button>
+    <transition
+      @before-enter="beforeEnter"
+      @enter="enter"
+      @before-leave="beforeLeave"
+      @leave="leave"
+      css="false"
+    >
+      <p v-if="show">hello</p>
+    </transition>
+  </div>
+</template>
+<script>
+  export default {
+    data() {
+      return {
+        show: true
+      }
+    },
+    methods: {
+      beforeEnter(el) {
+        el.style.opacity = 0
+        el.style.transition = 'opacity 0.5s ease'
+      },
+      enter(el) {
+        this.$el.offsetHeight
+        el.style.opacity = 1
+      },
+      beforeLeave(el) {
+        el.style.opacity = 1
+      },
+      leave(el) {
+        el.style.transition = 'opacity 0.5s ease'
+        el.style.opacity = 0
+      }
+    }
+  }
+</script>
+```
+
+`Transition `组件也允许在一个过渡组件中定义它过渡生命周期的` JavaScript` 钩子函数，我们可以在这些钩子函数中编写` JavaScript `操作 `DOM` 来实现过渡动画效果。
+
+### `Transition `组件的核心思想
+
+通过前面三个示例，我们不难发现都是在点击按钮时，通过修改 `v-if` 的条件值来触发过渡动画的。
+
+其实 `Transition `组件过渡动画的触发条件有以下四点：
+
+- 条件渲染 (使用 `v-if`)；
+- 条件展示 (使用` v-show`)；
+- 动态组件；
+- 组件根节点。
+
+所以你只能在上述四种情况中使用 `Transition `组件，在进入/离开过渡的时候会有 6 个 `class` 切换。
+
+1. `v-enter-from`：定义进入过渡的开始状态。在元素被插入之前生效，在元素被插入之后的下一帧移除。
+2. `v-enter-active`：定义进入过渡生效时的状态。在整个进入过渡的阶段中应用，在元素被插入之前生效，在过渡动画完成之后移除。这个类可以被用来定义进入过渡的过程时间，延迟和曲线函数。
+3. `v-enter-to`：定义进入过渡的结束状态。在元素被插入之后下一帧生效 (与此同时 `v-enter-from` 被移除)，在过渡动画完成之后移除。
+4. `v-leave-from`：定义离开过渡的开始状态。在离开过渡被触发时立刻生效，下一帧被移除。
+5. `v-leave-active`：定义离开过渡生效时的状态。在整个离开过渡的阶段中应用，在离开过渡被触发时立刻生效，在过渡动画完成之后移除。这个类可以被用来定义离开过渡的过程时间，延迟和曲线函数。
+6. `v-leave-to`：定义离开过渡的结束状态。在离开过渡被触发之后下一帧生效 (与此同时 `v-leave-from` 被删除)，在过渡动画完成之后移除。
+
+![CgqCHl9q7XSAZVLbAAIHrhK4PT8658](../image/CgqCHl9q7XSAZVLbAAIHrhK4PT8658.png)
+
+其实说白了 `Transition `组件的核心思想就是，`Transition` 包裹的元素插入删除时，在适当的时机插入这些 `CSS` 样式，而这些 `CSS` 的实现则决定了元素的过渡动画。
+
+大致了解了 `Transition` 组件的用法和核心思想后，接下来我们就来探究` Transition` 组件的实现原理。
+
+### `Transition` 组件的实现原理
+
+为了方便你的理解，我们还是结合示例来分析：
+
+```vue
+<template>
+  <div class="app">
+    <button @click="show = !show">
+      Toggle render
+    </button>
+    <transition name="fade">
+      <p v-if="show">hello</p>
+    </transition>
+  </div>
+</template>
+```
+
+先来看模板编译后生成的 `render` 函数：
+
+```javascript
+import { createVNode as _createVNode, openBlock as _openBlock, createBlock as _createBlock, createCommentVNode as _createCommentVNode, Transition as _Transition, withCtx as _withCtx } from "vue"
+export function render(_ctx, _cache, $props, $setup, $data, $options) {
+  return (_openBlock(), _createBlock("template", null, [
+    _createVNode("div", { class: "app" }, [
+      _createVNode("button", {
+        onClick: $event => (_ctx.show = !_ctx.show)
+      }, " Toggle render ", 8 /* PROPS */, ["onClick"]),
+      _createVNode(_Transition, { name: "fade" }, {
+        default: _withCtx(() => [
+          (_ctx.show)
+            ? (_openBlock(), _createBlock("p", { key: 0 }, "hello"))
+            : _createCommentVNode("v-if", true)
+        ]),
+        _: 1
+      })
+    ])
+  ]))
+}
+```
+
+对于 `Transition `组件部分，生成的` render` 函数主要创建了`Transition` 组件` vnode`，并且有一个默认插槽。
+
+我们接着来看 `Transition` 组件的定义：
+
+```javascript
+const Transition = (props, { slots }) => h(BaseTransition, resolveTransitionProps(props), slots)
+const BaseTransition = {
+  name: `BaseTransition`,
+  props: {
+    mode: String,
+    appear: Boolean,
+    persisted: Boolean,
+    // enter
+    onBeforeEnter: TransitionHookValidator,
+    onEnter: TransitionHookValidator,
+    onAfterEnter: TransitionHookValidator,
+    onEnterCancelled: TransitionHookValidator,
+    // leave
+    onBeforeLeave: TransitionHookValidator,
+    onLeave: TransitionHookValidator,
+    onAfterLeave: TransitionHookValidator,
+    onLeaveCancelled: TransitionHookValidator,
+    // appear
+    onBeforeAppear: TransitionHookValidator,
+    onAppear: TransitionHookValidator,
+    onAfterAppear: TransitionHookValidator,
+    onAppearCancelled: TransitionHookValidator
+  },
+  setup(props, { slots }) {
+    const instance = getCurrentInstance()
+    const state = useTransitionState()
+    let prevTransitionKey
+    return () => {
+      const children = slots.default && getTransitionRawChildren(slots.default(), true)
+      if (!children || !children.length) {
+        return
+      }
+      // Transition 组件只允许一个子元素节点，多个报警告，提示使用 TransitionGroup 组件
+      if ((process.env.NODE_ENV !== 'production') && children.length > 1) {
+        warn('<transition> can only be used on a single element or component. Use ' +
+          '<transition-group> for lists.')
+      }
+      // 不需要追踪响应式，所以改成原始值，提升性能
+      const rawProps = toRaw(props)
+      const { mode } = rawProps
+      // 检查 mode 是否合法
+      if ((process.env.NODE_ENV !== 'production') && mode && !['in-out', 'out-in', 'default'].includes(mode)) {
+        warn(`invalid <transition> mode: ${mode}`)
+      }
+      // 获取第一个子元素节点
+      const child = children[0]
+      if (state.isLeaving) {
+        return emptyPlaceholder(child)
+      }
+      // 处理 <transition><keep-alive/></transition> 的情况
+      const innerChild = getKeepAliveChild(child)
+      if (!innerChild) {
+        return emptyPlaceholder(child)
+      }
+      const enterHooks = resolveTransitionHooks(innerChild, rawProps, state, instance)
+        setTransitionHooks(innerChild, enterHooks)
+      const oldChild = instance.subTree
+      const oldInnerChild = oldChild && getKeepAliveChild(oldChild)
+      let transitionKeyChanged = false
+      const { getTransitionKey } = innerChild.type
+      if (getTransitionKey) {
+        const key = getTransitionKey()
+        if (prevTransitionKey === undefined) {
+          prevTransitionKey = key
+        }
+        else if (key !== prevTransitionKey) {
+          prevTransitionKey = key
+          transitionKeyChanged = true
+        }
+      }
+      if (oldInnerChild &&
+        oldInnerChild.type !== Comment &&
+        (!isSameVNodeType(innerChild, oldInnerChild) || transitionKeyChanged)) {
+        const leavingHooks = resolveTransitionHooks(oldInnerChild, rawProps, state, instance)
+        // 更新旧树的钩子函数
+        setTransitionHooks(oldInnerChild, leavingHooks)
+        // 在两个视图之间切换
+        if (mode === 'out-in') {
+          state.isLeaving = true
+          // 返回空的占位符节点，当离开过渡结束后，重新渲染组件
+          leavingHooks.afterLeave = () => {
+            state.isLeaving = false
+            instance.update()
+          }
+          return emptyPlaceholder(child)
+        }
+        else if (mode === 'in-out') {
+          leavingHooks.delayLeave = (el, earlyRemove, delayedLeave) => {
+            const leavingVNodesCache = getLeavingNodesForType(state, oldInnerChild)
+            leavingVNodesCache[String(oldInnerChild.key)] = oldInnerChild
+            // early removal callback
+            el._leaveCb = () => {
+              earlyRemove()
+              el._leaveCb = undefined
+              delete enterHooks.delayedLeave
+            }
+            enterHooks.delayedLeave = delayedLeave
+          }
+        }
+      }
+      return child
+    }
+  }
+}
+```
+
+可以看到，`Transition `组件是在 `BaseTransition` 的基础上封装的高阶函数式组件。由于整个 `Transition` 的实现代码较多，我就挑重点，为你讲清楚整体的实现思路。
+
+我把 **`Transition` 组件的实现分成组件的渲染、钩子函数的执行、模式的应用三个部分**去详细说明。
+
+#### 组件的渲染
+
+先来看` Transition` 组件是如何渲染的。我们重点看 `setup `函数部分的逻辑。
+
+`Transition` 组件和前面学习的 `KeepAlive` 组件一样，是一个抽象组件，组件本身不渲染任何实体节点，只渲染第一个子元素节点。
+
+> 注意，`Transition` 组件内部只能嵌套一个子元素节点，如果有多个节点需要用 `TransitionGroup` 组件。
+
+如果 `Transition` 组件内部嵌套的是 `KeepAlive `组件，那么它会继续查找 `KeepAlive` 组件嵌套的第一个子元素节点，来作为渲染的元素节点。
+
+如果 `Transition `组件内部没有嵌套任何子节点，那么它会渲染空的注释节点。
+
+在渲染的过程中，`Transition `组件还会通过 `resolveTransitionHooks` 去定义组件创建和删除阶段的钩子函数对象，然后再通过 `setTransitionHooks`函数去把这个钩子函数对象设置到 `vnode.transition` 上。
+
+渲染过程中，还会判断这是否是一次更新渲染，如果是会对不同的模式执行不同的处理逻辑，我会在后续介绍模式的应用时详细说明。
+
+以上就是 `Transition` 组件渲染做的事情，你需要记住的是`Transition` 渲染的是组件嵌套的第一个子元素节点。
+
+但是 `Transition `是如何在节点的创建和删除过程中设置那些与过渡动画相关的 `CSS` 的呢？这些都与钩子函数相关，我们先来看 `setTransitionHooks `的实现，看看它定义的钩子函数对象是怎样的：
+
+```javascript
+function resolveTransitionHooks(vnode, props, state, instance) {
+  const { appear, mode, persisted = false, onBeforeEnter, onEnter, onAfterEnter, onEnterCancelled, onBeforeLeave, onLeave, onAfterLeave, onLeaveCancelled, onBeforeAppear, onAppear, onAfterAppear, onAppearCancelled } = props
+  const key = String(vnode.key)
+  const leavingVNodesCache = getLeavingNodesForType(state, vnode)
+  const callHook = (hook, args) => {
+    hook &&
+    callWithAsyncErrorHandling(hook, instance, 9 /* TRANSITION_HOOK */, args)
+  }
+  const hooks = {
+    mode,
+    persisted,
+    beforeEnter(el) {
+      let hook = onBeforeEnter
+      if (!state.isMounted) {
+        if (appear) {
+          hook = onBeforeAppear || onBeforeEnter
+        }
+        else {
+          return
+        }
+      }
+      if (el._leaveCb) {
+        el._leaveCb(true /* cancelled */)
+      }
+      const leavingVNode = leavingVNodesCache[key]
+      if (leavingVNode &&
+        isSameVNodeType(vnode, leavingVNode) &&
+        leavingVNode.el._leaveCb) {
+        leavingVNode.el._leaveCb()
+      }
+      callHook(hook, [el])
+    },
+    enter(el) {
+      let hook = onEnter
+      let afterHook = onAfterEnter
+      let cancelHook = onEnterCancelled
+      if (!state.isMounted) {
+        if (appear) {
+          hook = onAppear || onEnter
+          afterHook = onAfterAppear || onAfterEnter
+          cancelHook = onAppearCancelled || onEnterCancelled
+        }
+        else {
+          return
+        }
+      }
+      let called = false
+      const done = (el._enterCb = (cancelled) => {
+        if (called)
+          return
+        called = true
+        if (cancelled) {
+          callHook(cancelHook, [el])
+        }
+        else {
+          callHook(afterHook, [el])
+        }
+        if (hooks.delayedLeave) {
+          hooks.delayedLeave()
+        }
+        el._enterCb = undefined
+      })
+      if (hook) {
+        hook(el, done)
+        if (hook.length <= 1) {
+          done()
+        }
+      }
+      else {
+        done()
+      }
+    },
+    leave(el, remove) {
+      const key = String(vnode.key)
+      if (el._enterCb) {
+        el._enterCb(true /* cancelled */)
+      }
+      if (state.isUnmounting) {
+        return remove()
+      }
+      callHook(onBeforeLeave, [el])
+      let called = false
+      const done = (el._leaveCb = (cancelled) => {
+        if (called)
+          return
+        called = true
+        remove()
+        if (cancelled) {
+          callHook(onLeaveCancelled, [el])
+        }
+        else {
+          callHook(onAfterLeave, [el])
+        }
+        el._leaveCb = undefined
+        if (leavingVNodesCache[key] === vnode) {
+          delete leavingVNodesCache[key]
+        }
+      })
+      leavingVNodesCache[key] = vnode
+      if (onLeave) {
+        onLeave(el, done)
+        if (onLeave.length <= 1) {
+          done()
+        }
+      }
+      else {
+        done()
+      }
+    },
+    clone(vnode) {
+      return resolveTransitionHooks(vnode, props, state, instance)
+    }
+  }
+  return hooks
+}
+```
+
+钩子函数对象定义了 4 个钩子函数，分别是 `beforeEnter，enter，leave 和 clone`，它们的执行时机是什么，又是怎么处理 我们给 `Transition` 组件传递的一些` Prop` 的？其中，`beforeEnter、enter 和 leave `发生在元素的插入和删除阶段，接下来我们就来分析这几个钩子函数的执行过程。
+
+#### 钩子函数的执行
+
+#####  `beforeEnter `
+
+这个部分我们先来看 `beforeEnter `钩子函数。
+
+在 `patch` 阶段的` mountElement `函数中，在插入元素节点前且存在过渡的条件下会执行` vnode.transition `中的` beforeEnter `函数，我们来看它的定义：
+
+```javascript
+beforeEnter(el) {
+  let hook = onBeforeEnter
+  if (!state.isMounted) {
+    if (appear) {
+      hook = onBeforeAppear || onBeforeEnter
+    }
+    else {
+      return
+    }
+  }
+  if (el._leaveCb) {
+    el._leaveCb(true /* cancelled */)
+  }
+  const leavingVNode = leavingVNodesCache[key]
+  if (leavingVNode &&
+    isSameVNodeType(vnode, leavingVNode) &&
+    leavingVNode.el._leaveCb) {
+    leavingVNode.el._leaveCb()
+  }
+  callHook(hook, [el])
+}
+```
+
+`beforeEnter` 钩子函数主要做的事情就是根据 `appear `的值和 `DOM `是否挂载，来执行 `onBeforeEnter `函数或者是 `onBeforeAppear` 函数，其他的逻辑我们暂时先不看。
+
+`appear、onBeforeEnter、onBeforeAppear` 这些变量都是从` props `中获取的，那么这些 `props `是怎么初始化的呢？回到 `Transition` 组件的定义：
+
+```javascript
+const Transition = (props, { slots }) => h(BaseTransition, resolveTransitionProps(props), slots)
+```
+
+可以看到，传递的` props` 经过了 `resolveTransitionProps` 函数的封装，我们来看它的定义：
+
+```javascript
+function resolveTransitionProps(rawProps) {
+  let { name = 'v', type, css = true, duration, enterFromClass = `${name}-enter-from`, enterActiveClass = `${name}-enter-active`, enterToClass = `${name}-enter-to`, appearFromClass = enterFromClass, appearActiveClass = enterActiveClass, appearToClass = enterToClass, leaveFromClass = `${name}-leave-from`, leaveActiveClass = `${name}-leave-active`, leaveToClass = `${name}-leave-to` } = rawProps
+  const baseProps = {}
+  for (const key in rawProps) {
+    if (!(key in DOMTransitionPropsValidators)) {
+      baseProps[key] = rawProps[key]
+    }
+  }
+  if (!css) {
+    return baseProps
+  }
+  const durations = normalizeDuration(duration)
+  const enterDuration = durations && durations[0]
+  const leaveDuration = durations && durations[1]
+  const { onBeforeEnter, onEnter, onEnterCancelled, onLeave, onLeaveCancelled, onBeforeAppear = onBeforeEnter, onAppear = onEnter, onAppearCancelled = onEnterCancelled } = baseProps
+  const finishEnter = (el, isAppear, done) => {
+    removeTransitionClass(el, isAppear ? appearToClass : enterToClass)
+    removeTransitionClass(el, isAppear ? appearActiveClass : enterActiveClass)
+    done && done()
+  }
+  const finishLeave = (el, done) => {
+    removeTransitionClass(el, leaveToClass)
+    removeTransitionClass(el, leaveActiveClass)
+    done && done()
+  }
+  const makeEnterHook = (isAppear) => {
+    return (el, done) => {
+      const hook = isAppear ? onAppear : onEnter
+      const resolve = () => finishEnter(el, isAppear, done)
+      hook && hook(el, resolve)
+      nextFrame(() => {
+        removeTransitionClass(el, isAppear ? appearFromClass : enterFromClass)
+        addTransitionClass(el, isAppear ? appearToClass : enterToClass)
+        if (!(hook && hook.length > 1)) {
+          if (enterDuration) {
+            setTimeout(resolve, enterDuration)
+          }
+          else {
+            whenTransitionEnds(el, type, resolve)
+          }
+        }
+      })
+    }
+  }
+  return extend(baseProps, {
+    onBeforeEnter(el) {
+      onBeforeEnter && onBeforeEnter(el)
+      addTransitionClass(el, enterActiveClass)
+      addTransitionClass(el, enterFromClass)
+    },
+    onBeforeAppear(el) {
+      onBeforeAppear && onBeforeAppear(el)
+      addTransitionClass(el, appearActiveClass)
+      addTransitionClass(el, appearFromClass)
+    },
+    onEnter: makeEnterHook(false),
+    onAppear: makeEnterHook(true),
+    onLeave(el, done) {
+      const resolve = () => finishLeave(el, done)
+      addTransitionClass(el, leaveActiveClass)
+      addTransitionClass(el, leaveFromClass)
+      nextFrame(() => {
+        removeTransitionClass(el, leaveFromClass)
+        addTransitionClass(el, leaveToClass)
+        if (!(onLeave && onLeave.length > 1)) {
+          if (leaveDuration) {
+            setTimeout(resolve, leaveDuration)
+          }
+          else {
+            whenTransitionEnds(el, type, resolve)
+          }
+        }
+      })
+      onLeave && onLeave(el, resolve)
+    },
+    onEnterCancelled(el) {
+      finishEnter(el, false)
+      onEnterCancelled && onEnterCancelled(el)
+    },
+    onAppearCancelled(el) {
+      finishEnter(el, true)
+      onAppearCancelled && onAppearCancelled(el)
+    },
+    onLeaveCancelled(el) {
+      finishLeave(el)
+      onLeaveCancelled && onLeaveCancelled(el)
+    }
+  })
+}
+```
+
+`resolveTransitionProps` 函数主要作用是，在我们给 `Transition` 传递的 `Props` 基础上做一层封装，然后返回一个新的 `Props `对象，由于它包含了所有的 `Props` 处理，你不需要一下子了解所有的实现，按需分析即可。
+
+我们来看 `onBeforeEnter` 函数，它的内部执行了基础 `props` 传入的 `onBeforeEnter` 钩子函数，并且给 `DOM` 元素 `el` 添加了` enterActiveClass` 和 `enterFromClass` 样式。
+
+其中，`props` 传入的 `onBeforeEnter` 函数就是我们写 `Transition` 组件时添加的` beforeEnter` 钩子函数。`enterActiveClass` 默认值是 `v-enter-active，enterFromClass` 默认值是 `v-enter-from`，如果给 `Transition` 组件传入了 `name` 的 `prop`，比如 `fade`，那么 `enterActiveClass` 的值就是 `fade-enter-active，enterFromClass` 的值就是 `fade-enter-from`。
+
+原来这就是在 `DOM `元素对象在创建后，插入到页面前做的事情：**执行 `beforeEnter` 钩子函数**，**以及给元素添加相应的 `CSS `样式**。
+
+`onBeforeAppear` 和 `onBeforeEnter` 的逻辑类似，就不赘述了，它是在我们给` Transition `组件传入 `appear` 的 `Prop`，且首次挂载的时候执行的。
+
+##### `enter`
+
+执行完 `beforeEnter` 钩子函数，接着插入元素到页面，然后会执行 `vnode.transition` 中的`enter` 钩子函数，我们来看它的定义：
+
+```javascript
+enter(el) {
+  let hook = onEnter
+  let afterHook = onAfterEnter
+  let cancelHook = onEnterCancelled
+  if (!state.isMounted) {
+    if (appear) {
+      hook = onAppear || onEnter
+      afterHook = onAfterAppear || onAfterEnter
+      cancelHook = onAppearCancelled || onEnterCancelled
+    }
+    else {
+      return
+    }
+  }
+  let called = false
+  const done = (el._enterCb = (cancelled) => {
+    if (called)
+      return
+    called = true
+    if (cancelled) {
+      callHook(cancelHook, [el])
+    }
+    else {
+      callHook(afterHook, [el])
+    }
+    if (hooks.delayedLeave) {
+      hooks.delayedLeave()
+    }
+    el._enterCb = undefined
+  })
+  if (hook) {
+    hook(el, done)
+    if (hook.length <= 1) {
+      done()
+    }
+  }
+  else {
+    done()
+  }
+}
+```
+
+`enter `钩子函数主要做的事情就是根据 `appear` 的值和 `DOM` 是否挂载，执行 `onEnter` 函数或者是 `onAppear` 函数，并且这个函数的第二个参数是一个 `done` 函数，表示过渡动画完成后执行的回调函数，它是异步执行的。
+
+> 注意，当 `onEnter` 或者 `onAppear` 函数的参数长度小于等于 1 的时候，`done` 函数在执行完` hook` 函数后同步执行。
+
+在 `done` 函数的内部，我们会执行` onAfterEnter `函数或者是 `onEnterCancelled` 函数，其它的逻辑我们也暂时先不看。
+
+同理，`onEnter、onAppear、onAfterEnter` 和 `onEnterCancelled` 函数也是从 `Props` 传入的，我们重点看 `onEnter` 的实现，它是 `makeEnterHook(false)` 函数执行后的返回值，如下：
+
+```javascript
+const makeEnterHook = (isAppear) => {
+  return (el, done) => {
+    const hook = isAppear ? onAppear : onEnter
+    const resolve = () => finishEnter(el, isAppear, done)
+    hook && hook(el, resolve)
+    nextFrame(() => {
+      removeTransitionClass(el, isAppear ? appearFromClass : enterFromClass)
+      addTransitionClass(el, isAppear ? appearToClass : enterToClass)
+      if (!(hook && hook.length > 1)) {
+        if (enterDuration) {
+          setTimeout(resolve, enterDuration)
+        }
+        else {
+          whenTransitionEnds(el, type, resolve)
+        }
+      }
+    })
+  }
+}
+```
+
+在函数内部，首先执行基础` props `传入的 `onEnter` 钩子函数，然后在下一帧给` DOM` 元素 `el` 移除了 `enterFromClass`，同时添加了 `enterToClass` 样式。
+
+其中，`props` 传入的 `onEnter`函数就是我们写 `Transition` 组件时添加的 `enter` 钩子函数，`enterFromClass` 是我们在 `beforeEnter` 阶段添加的，会在当前阶段移除，新增的 `enterToClass` 值默认是 `v-enter-to`，如果给 `Transition` 组件传入了 `name` 的 `prop`，比如 `fade`，那么 `enterToClass` 的值就是 `fade-enter-to`。
+
+注意，当我们添加了 `enterToClass` 后，这个时候浏览器就开始根据我们编写的` CSS` 进入过渡动画了，那么动画何时结束呢？
+
+`Transition` 组件允许我们传入 `enterDuration` 这个 `prop`，它会指定进入过渡的动画时长，当然如果你不指定，`Vue.js` 内部会监听动画结束事件，然后在动画结束后，执行`finishEnter `函数，来看它的实现：
+
+```javascript
+const finishEnter = (el, isAppear, done) => {
+  removeTransitionClass(el, isAppear ? appearToClass : enterToClass)
+  removeTransitionClass(el, isAppear ? appearActiveClass : enterActiveClass)
+  done && done()
+}
+```
+
+其实就是给 `DOM `元素移除 `enterToClass` 以及` enterActiveClass`，同时执行 `done` 函数，进而执行` onAfterEnter` 钩子函数。
+
+至此，元素进入的过渡动画逻辑就分析完了，接下来我们来分析元素离开的过渡动画逻辑。
+
+#####  `leave` 
+
+当元素被删除的时候，会执行 `remove` 方法，在真正从` DOM `移除元素前且存在过渡的情况下，会执行 `vnode.transition `中的 `leave` 钩子函数，并且把移动 `DOM `的方法作为第二个参数传入，我们来看它的定义：
+
+```javascript
+leave(el, remove) {
+  const key = String(vnode.key)
+  if (el._enterCb) {
+    el._enterCb(true /* cancelled */)
+  }
+  if (state.isUnmounting) {
+    return remove()
+  }
+  callHook(onBeforeLeave, [el])
+  let called = false
+  const done = (el._leaveCb = (cancelled) => {
+    if (called)
+      return
+    called = true
+    remove()
+    if (cancelled) {
+      callHook(onLeaveCancelled, [el])
+    }
+    else {
+      callHook(onAfterLeave, [el])
+    }
+    el._leaveCb = undefined
+    if (leavingVNodesCache[key] === vnode) {
+      delete leavingVNodesCache[key]
+    }
+  })
+  leavingVNodesCache[key] = vnode
+  if (onLeave) {
+    onLeave(el, done)
+    if (onLeave.length <= 1) {
+      done()
+    }
+  }
+  else {
+    done()
+  }
+}
+```
+
+`leave `钩子函数主要做的事情就是执行 `props` 传入的 `onBeforeLeave `钩子函数和 `onLeave` 函数，`onLeave` 函数的第二个参数是一个 `done `函数，它表示离开过渡动画结束后执行的回调函数。
+
+`done` 函数内部主要做的事情就是执行 `remove` 方法移除 `DOM`，然后执行 `onAfterLeave` 钩子函数或者是 `onLeaveCancelled `函数，其它的逻辑我们也先不看。
+
+接下来，我们重点看一下 `onLeave` 函数的实现，看看离开过渡动画是如何执行的。
+
+```javascript
+onLeave(el, done) {
+  const resolve = () => finishLeave(el, done)
+  addTransitionClass(el, leaveActiveClass)
+  addTransitionClass(el, leaveFromClass)
+  nextFrame(() => {
+    removeTransitionClass(el, leaveFromClass)
+    addTransitionClass(el, leaveToClass)
+    if (!(onLeave && onLeave.length > 1)) {
+      if (leaveDuration) {
+        setTimeout(resolve, leaveDuration)
+      }
+      else {
+        whenTransitionEnds(el, type, resolve)
+      }
+    }
+  })
+  onLeave && onLeave(el, resolve)
+}
+```
+
+`onLeave `函数首先给 DOM 元素添加 `leaveActiveClass` 和 `leaveFromClass`，并执行基础 `props` 传入的 `onLeave` 钩子函数，然后在下一帧移除 `leaveFromClass`，并添加 `leaveToClass`。
+
+其中，`leaveActiveClass` 的默认值是 `v-leave-active`，`leaveFromClass` 的默认值是 `v-leave-from，leaveToClass `的默认值是 `v-leave-to`。如果给 `Transition `组件传入了 `name` 的 `prop`，比如 `fade`，那么 `leaveActiveClass` 的值就是 `fade-leave-active，leaveFromClass` 的值就是 `fade-leave-from，leaveToClass` 的值就是 `fade-leave-to`。
+
+注意，当我们添加 `leaveToClass` 时，浏览器就开始根据我们编写的 `CSS` 执行离开过渡动画了，那么动画何时结束呢？
+
+和进入动画类似，`Transition` 组件允许我们传入 `leaveDuration` 这个 `prop`，指定过渡的动画时长，当然如果你不指定，`Vue.js` 内部会监听动画结束事件，然后在动画结束后，执行 `resolve` 函数，它是执行 `finishLeave` 函数的返回值，来看它的实现：
+
+```javascript
+const finishLeave = (el, done) => {
+  removeTransitionClass(el, leaveToClass)
+  removeTransitionClass(el, leaveActiveClass)
+  done && done()
+}
+```
+
+其实就是给 `DOM `元素移除 `leaveToClass `以及` leaveActiveClass`，同时执行` done `函数，进而执行 `onAfterLeave `钩子函数。
+
+至此，元素离开的过渡动画逻辑就分析完了，可以看出离开过渡动画和进入过渡动画是的思路差不多，本质上都是在添加和移除一些` CSS `去执行动画，并且在过程中执行用户传入的钩子函数。
+
+#### 模式的应用
+
+前面我们在介绍 `Transition` 的渲染过程中提到过模式的应用，模式有什么用呢，我们还是通过示例说明，把前面的例子稍加修改：
+
+```vue
+<template>
+  <div class="app">
+    <button @click="show = !show">
+      Toggle render
+    </button>
+    <transition name="fade">
+      <p v-if="show">hello</p>
+      <p v-else>hi</p>
+    </transition>
+  </div>
+</template>
+<script>
+  export default {
+    data() {
+      return {
+        show: true
+      }
+    }
+  }
+</script>
+<style>
+  .fade-enter-active,
+  .fade-leave-active {
+    transition: opacity 0.5s ease;
+  }
+  .fade-enter-from,
+  .fade-leave-to {
+    opacity: 0;
+  }
+</style>
+```
+
+我们在 `show` 条件为 `false` 的情况下，显示字符串 `hi`，你可以运行这个示例，然后会发现这个过渡效果有点生硬，并不理想。
+
+然后，我们给这个 `Transition` 组件加一个 `out-in` 的 `mode`：
+
+```vue
+<transition mode="out-in" name="fade">
+  <p v-if="show">hello</p>
+  <p v-else>hi</p>
+</transition>
+```
+
+我们会发现这个过渡效果好多了，`hello `文本先完成离开的过渡后，`hi `文本开始进入过渡动画。
+
+模式非常适合这种两个元素切换的场景，`Vue.js`给` Transition `组件提供了两种模式， `in-out 和 out-in` ，它们有什么区别呢？
+
+- 在 `in-out` 模式下，新元素先进行过渡，完成之后当前元素过渡离开。
+- 在 `out-in` 模式下，当前元素先进行过渡，完成之后新元素过渡进入。
+
+在实际工作中，你大部分情况都是在使用 `out-in` 模式，而 `in-out` 模式很少用到，所以接下来我们就来分析 `out-in` 模式的实现原理。
+
+我们先不妨思考一下，为什么在不加模式的情况下，会出现示例那样的过渡效果。
+
+当我们点击按钮，`show` 变量由 `true` 变成` false`，会触发当前元素 `hello` 文本的离开动画，也会同时触发新元素 `hi `文本的进入动画。由于动画是同时进行的，而且在离开动画结束之前，当前元素 hello 是没有被移除 `DOM` 的，所以它还会占位，就把新元素` hi` 文本挤到下面去了。当 `hello` 文本的离开动画执行完毕从 `DOM `中删除后，`hi` 文本才能回到之前的位置。
+
+那么，我们怎么做才能做到当前元素过渡动画执行完毕后，再执行新元素的过渡呢？
+
+我们来看一下 `out-in` 模式的实现：
+
+```javascript
+const leavingHooks = resolveTransitionHooks(oldInnerChild, rawProps, state, instance)
+setTransitionHooks(oldInnerChild, leavingHooks)
+if (mode === 'out-in') {
+  state.isLeaving = true
+  leavingHooks.afterLeave = () => {
+    state.isLeaving = false
+    instance.update()
+  }
+  return emptyPlaceholder(child)
+}
+```
+
+当模式为 `out-in `的时候，会标记 `state.isLeaving `为 `true`，然后返回一个空的注释节点，同时更新当前元素的钩子函数中的 `afterLeave` 函数，内部执行 `instance.update` 重新渲染组件。
+
+这样做就保证了在当前元素执行离开过渡的时候，新元素只渲染成一个注释节点，这样页面上看上去还是只执行当前元素的离开过渡动画。
+
+然后当离开动画执行完毕后，触发了 `Transition` 组件的重新渲染，这个时候就可以如期渲染新元素并执行进入过渡动画了，是不是很巧妙呢？
+
+### 总结
+
+了解了 `Transition` 组件是如何渲染的，如何执行过渡动画和相应的钩子函数的，以及当两个视图切换时，模式的工作原理是怎样的。
+
+### 问题
+
+**问：**`Transition` 组件在 `beforeEnter` 钩子函数里会判断 `el._leaveCb` 是否存在，存在则执行，在` leave` 钩子函数里会判断` el._enterCb` 是否存在，存在则执行，这么做的原因是什么？
+
+**答：**
+
+
 # 七、`Vue Router`实现原理
+
+Vue.js 是一个渐进式的前端框架，除了提供好用的核心库之外，官方还提供了前端路由解决方案。
+
+当我们开发大型应用的时候，都离不开前端路由，因此了解它的实现原理，非常有助于我们更好地掌握和应用，如果在使用过程中出现 Bug，希望你也可以从源码层面去找到问题的本质。
+
