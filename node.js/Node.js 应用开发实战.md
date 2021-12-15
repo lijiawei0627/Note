@@ -2667,3 +2667,255 @@ module.exports = () => {
 句柄数据类型 从数据类型上来看，它只是一个16位的无符号整数。 应用程序总是通过调用`Windows API`获得一个句柄，之后其他`Windows`函数就可以使用该句柄，以引用和操作相应的内核对象。 句柄可以像指针那样置空，那样句柄就没有任何意义，不代表任何内核对象 。 以上是一个概念的解释，我自己的理解是，比如你在 `Node.js` 中发起一个网络请求，你需要发起请求并且获得返回信息，这中间肯定需要有一个媒介来支撑这个过程，那么这个媒介就是一个句柄。又比如你操作数据库，连接成功了以后，你下次还希望用这个连接成功的操作查询数据库，那么你需要将连接成功的媒介保存起来，并且下一次再应用这个媒介来发起查询处理请求，那么这个媒介也是句柄。
 
 # 十二、内存检查：多种类型的内存泄漏分析方案
+
+进程的安全，而内存的泄漏异常是进程安全的其中一种场景，那么本讲我们就来详细介绍一下，什么是内存泄漏以及当出现内存异常时，我们应该如何去分析并定位具体的问题。
+
+>内存泄漏（`Memory Leak`）是指程序中已动态分配的堆内存，由于某种原因程序未释放或无法释放，造成系统内存的浪费，导致程序运行速度减慢甚至系统崩溃等严重后果。
+
+## 12.1 `Node.js GC` 的策略
+
+首先我们要理解在 `Node.js` 存储中分为堆和栈：
+
+* **栈中主要存储的是一些原始类型**，比如 `Boolean、Null、Undefined、Number、BigInt、String 以及 Symbol`；
+
+* **堆中主要存储引用类型的数据**，比如对象、全局变量等。
+
+**由于栈是系统存储的临时数据，因此系统会进行释放，不会引发内存泄漏问题；而堆中的数据是需要程序自己进行清理，因此存在内存泄漏风险，在 `JavaScript` 中进行垃圾回收的有引用计数和标记清除法。**
+
+**在 `Node.js V8 `引擎中使用了多种方法的融合：**
+
+* **对于存活较短的存储对象会使用`Scavenge` 算法**；
+
+* 而对于存活较长的对象或者说在 `Scavenge` 算法中存储的对象数据超过一定比例时，则会**使用标记清除法与标记整理法相结合的方式。**
+
+## 12.2 内存泄漏分类
+
+**内存泄漏可以分为 4 种类型，分别是常发性、偶发性、一次性和隐性。**
+
+### 常发性
+
+**发生内存泄漏的代码会被多次执行，每次被执行的时候都会导致一块内存泄漏**。这种是比较好理解的，比如说我们有一个全局变量，在每次调用该部分业务逻辑时，都会导致该变量的数据增加，这就是常发性。这种问题一般比较好定位，只要在开发或者测试阶段就可以快速定位到。
+
+### 偶发性
+
+**发生内存泄漏的代码只有在某些特定环境或操作过程下才会发生。常发性和偶发性是相对的**。对于特定的环境，偶发性也许就变成了常发性。比如虽然都是全局变量，A 逻辑只要调用就会增加，而 B 逻辑需要满足各种复杂条件后才会增加，那么 B 就是偶发性，而 A 就是上面的常发性。
+
+### 一次性
+
+**发生内存泄漏的代码只会被执行一次，或者由于算法上的缺陷，导致总会有一块且仅一块内存发生泄漏**。这种情况如果出现的次数不多，那么影响相对较小，比如说我们在启动 `Node.js` 服务后，`require` 并初始化了一个对象，但是并没有在程序中使用这个对象，我们知道在 `Node.js require` 的模块是会被缓存起来的，因此这也算是一种内存泄漏场景，只是这类场景影响非常有限。
+
+### 隐性
+
+**在调用函数或者模块时，当参数或者输入没有达到界定值时，是不会发生泄漏，当参数或者输入值达到一定时，才会发现内存泄漏，我们称这种为隐性**。举个简单的例子，比如我们要读取一个文件，当文件很小时，我们内存可以处理，但是当读取的文件非常大，则会导致内存异常问题，严格来说隐性的情况并不是内存泄漏，因为当程序调用结束后，还是会最终释放。
+
+## 12.3 `Node.js `内存泄漏分析方法
+
+一般情况下内存的增长是不会立即出现的，而是缓慢地增长，特别是偶发性和隐性的情况，因此**我们需要选择相应的时间来进行一些内存快照分析**。
+
+**如果内存泄漏是常发性的，这就不需要到生产环境（现网环境）复现了，可以直接在开发或者测试环境进行内存快照即可。而如果是偶发性的或者隐性的情况，你才需要在生产环境进行内存快照。**
+
+### 工具介绍
+
+只需要 2 个工具就可以分析出内存泄漏的问题：
+
+* `heapdump` 内存快照的工具
+
+* `chrome dev tools` 中的 `Memory Profiles`
+
+#### `heapdump`
+
+该工具主要是生成一个内存快照文件，在我们框架项目中，你可以直接 `require lib` 下的 `heapdump` 这个库即可，比如我们的 `app.js`这段代码：
+
+```javascript
+const Koa = require('koa');
+const app = new Koa();
+const routerMiddleware = require('./src/middleware/router');
+const logCenter = require('./src/middleware/logCenter');
+const dumpFun = require('./src/lib/heapdump'); 
+app.use(logCenter());
+app.use(routerMiddleware());
+app.listen(3000, () => console.log(`Example app listening on port 3000!`));
+dumpFun('nodejs-cloumn', '10:53', 60);
+```
+
+在代码中的第 5 行引用了这个库，然后调用 `dumpFun` 从 10 点 53 分开始，每隔 60 秒打印一次内存快照。这个库如何实现的细节，你可以自己去[` GitHub` 源码](https://github.com/love-flutter/nodejs-column?fileGuid=xxQTRXtVcqtHK6j8)中的 lib 目录下查看，**主要是做了一层封装，能够更好地适用我们的应用场景。**
+
+#### `chrome dev tools`
+
+打开 `Chrome `浏览器的控制台，在下图界面可以找到该工具。
+
+![chrome dev tools 的 Memory 工具](../image/CioPOWBmwqqAQM50AAD9oysXX_E217.png)
+
+把生成的内存快照文件，点击 `Load` 按钮加载进来。
+
+### 实践分析
+
+在介绍之前，我们先来看一个常发性的内存泄漏场景，假设我们有一个 session 处理的模块，每次用户请求时需要判断用户是否有登录态，因此需要将 session 保存在一个地方，这里我们保存在内存中。为了效果，我们在请求登录的接口时，进行一个比较大的循环处理，代码如下：
+
+```javascript
+const Controller = require('../core/controller');
+class MemLeak extends Controller {
+    login() {
+        for(let i=0; i<10000000; i++){
+            this.ctx.session.set(i);
+        }
+        return this.resApi(true, 'set success');
+    }
+}
+module.exports = MemLeak;
+```
+
+这个文件在源码的 `controller/memLeak.js` 中，上面代码就是在调用这个接口时，往 session 中 set 了一个 10000000 的数据。
+
+接下来我们修改 `app.js`，在其中**增加 session 功能模块，并且启动内存快照的打印时间节点**，如下代码所示：
+
+```javascript
+const Koa = require('koa');
+const app = new Koa();
+const routerMiddleware = require('./src/middleware/router');
+const logCenter = require('./src/middleware/logCenter');
+const session = require('./src/middleware/session');
+const dumpFun = require('./src/lib/heapdump'); 
+app.use(logCenter());
+app.use(session());
+app.use(routerMiddleware());
+app.listen(3000, () => console.log(`Example app listening on port 3000!`));
+/// 为了方便，可以打开如下代码自动获取
+const currentDate = new Date();
+dumpFun('nodejs-cloumn', `${currentDate.getHours()}:${currentDate.getMinutes()+1}`, 60);
+```
+
+在上面代码中的第 5 行就是加载我们的 session 中间件，并且在第 10 行，也就是路由转发处理之前调用，这样就可以在 controller 中处理 session。最后在代码 15 行增加内存快照，这里的时间点，你需要根据自己的当前时间进行调整，最好大于当前时间 1 分钟就行了，比如我现在的时间是 14 点 43 分，因此可以设置成 14 点 44 分，为了方便，我这里将上面的时间设置为了自动获取。
+
+session 这个中间件是比较简单的，代码如下：
+
+```javascript
+const loginUsers = {};
+module.exports = function () {
+    return async function ( ctx, next ) {
+       ctx.session = session;
+       await next();
+    }
+}
+const session = {
+    set: function(username) {
+        loginUsers[username] = true;
+    },
+
+    check: function(username){
+        return loginUsers[username] ? true : false;
+    }
+};
+```
+
+在上面代码中存在一个内存泄漏的点，就是**`loginUsers `会随着用户请求越来越大， 导致存储的空间占用越来越大，而这个 `loginUsers` 在进程运行期间，又不会进行释放，从而导致内存泄漏的问题**。
+
+接下来我们就启动服务，启动成功后会看到如下提示：
+
+```
+系统将在 38 秒后打印首次内存快照，请在首次快照后请求内存泄漏接口
+Example app listening on port 3000!
+```
+
+等待 38 秒后，同样会提示：
+
+```
+打印首次内存快照成功，请开始请求内存泄漏接口
+```
+
+接下来我们打开内存异常的接口：
+
+```
+http://127.0.0.1:3000/v1/mem-leak
+```
+
+请求成功后，由于我们内存快照间隔 1 分钟，再耐心等待 1 分钟，你会在项目的 log 目录下看到两个 heapsnapshot 文件。
+
+接下来我们打开 Chrome 浏览器 Memory 分析工具，分别 Load 这两个问题，如图所示，先选择较大内存的文件，然后再选择 comparsion 对比最新的文件。
+
+![内存快照对比图](../image/Cgp9HWBmwryAJxI1AAKJIYG0_JU009.png)
+
+在对比后，你可以选择右侧的单独每一列进行排序，其中右侧的每一项表示的是：
+
+* **New，对比文件新创建的对象；**
+
+* **Deleted，对比文件删除的对象；**
+
+* **Delta，对比文件净新增的对象；**
+
+* **Alloc Size，已分配使用中的内存空间；**
+
+* **Freed Size，对比文件释放的内存空间；**
+
+* **Size Delta，对比文件净占用内存空间。**
+
+以上我们主要对比净新增的 Delta 和 Size Delta，分别用两者排序，你会发现 Size Delta 中 (array) 占用空间非常大，如图所示。
+
+![Size Delta 排序后的结果](../image/Cgp9HWBmwsSAd_jVAAKOBgdlSSQ463.png)
+
+你展开 (array) 这一列，然后在 (array) 的第一行，如下图所示，会看到一个未描述的对象占用了非常大的空间，这个对象几乎占用了 99% 的空间，在这个对象中有一个关键信息是 @108135 这个值，你可以先对这个值有个印象。
+
+![(array) 空间占比排序结果](../image/CioPOWBmws2ALJfrAAF6K_LTAvs088.png)
+
+我们右键这个数据，然后选择 Reveal in Summary view，你将会看到下图的结果：
+
+![Reveal in Summary view 结果](../image/CioPOWBmwtSARfZXAAELN9G896Q666.png)
+
+但是这里因为 (array) 是一个引用对象，因此我们要看下整体的占用情况，我们把 (array) 收缩起来，然后选择右侧的 Retained Size，可以看到下图所示的结果。
+
+![Retained Size 排序后的结果](../image/Cgp9HWBmwuCAAi-LAAFhD2HwhQo398.png)
+
+在上图中你发现很多以 0、1、10 、... 这种为键的对象，里面存储了比较简单的值 true，这里我们还没有找到具体的原因，但是至少发现了数据问题，那么接下来我们继续看 system/Context，其实第一眼就能发现其是 Koa 框架中的 ctx，我们展开就可以看到下图结果。
+
+![展开 system/Context 结果](../image/CioPOWBmwvCAC9V1AAH1y5NvYrw937.png)
+
+你从上图发现异常了吗，loginUsers 占用了 95% 空间，好了这下真相大白了，我们再去 ctx 中寻找在哪里进行 loginUsers 的设置，经过代码检查，那肯定能找到泄漏的具体位置了。
+
+以上就是一个分析过程，主要还是 comparsion 结合 summary 来进行分析。**对于非常发性的内存泄漏，比如偶发性，就需要在生产环境定时打印内存快照**。请注意要选择用户访问较少的时间节点，比如说当地的凌晨 3-4 点，同时两个快照的打印时间点必须一致，这样用户访问的数据对内存影响较小。
+
+## 12.4 `Router` 中间件优化
+
+在前一讲中，我们说了 Router 存在的问题，这里顺便将这块进行一些优化，减少对 router 模块的频繁修改。
+
+我们在中间件 middleware 文件夹中新增了一个 newRouter.js 文件，主要介绍几个关键的实现点。
+
+第一个就是需要将**横杠转化为大写首字母**，因此这里需要使用到这样的正则替换：
+
+```javascript
+// 去除非常规请求路径，将-转化为大写
+pathname = pathname.replace('..', '').replace(/\-(\w)/g, (all,letter)=>letter.toUpperCase());
+```
+
+上面代码中需要去除 .. 的访问，防止用户利用非法请求路径，请求根目录的文件信息。
+
+第二就是我们**默认请求路径的最后一个是方法名**，因此使用 / 切割后，获取最后一个元素为请求的方法名，如下代码所示：
+
+```javascript
+pathnameArr = pathname.split('/');
+pathnameArr.shift();
+
+if(pathnameArr.length < 2){
+  baseFun.setResInfo(ctx, false, 'path not found', null, 404);
+  return await next();
+}
+let method = pathnameArr.pop();
+```
+
+其他部分的代码基本相似，你要使用这个新的路由的话，直接在 app.js 中打开这段注释即可。
+
+```javascript
+const routerMiddleware = require('./src/middleware/router');
+//const routerMiddleware = require('./src/middleware/newRouter');
+const logCenter = require('./src/middleware/logCenter');
+const session = require('./src/middleware/session');
+```
+
+打开以后，你就可以按照如下方式来请求了：
+
+```
+http://127.0.0.1:3000/v1/test/index
+http://127.0.0.1:3000/content/test
+http://127.0.0.1:3000/v1/test/index-test
+```
+
+# 十三、性能分析：性能影响的关键路径以及优化策略
