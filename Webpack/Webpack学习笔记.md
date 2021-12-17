@@ -2,7 +2,7 @@
 
 `webpack` 本质上是一个打包工具，它会根据代码的内容解析模块依赖，帮助我们把多个模块的代码打包。借用 `webpack` 官网的图片：
 
-![webpack as a bundler](https://user-gold-cdn.xitu.io/2018/3/19/1623bfac4a1e0945?w=2152&h=850&f=png&s=133657)
+![image-20211217192306379](../image/image-20211217192306379.png)
 
 如上图，`webpack` 会把我们项目中使用到的多个代码模块（可以是不同文件类型），打包构建成项目运行仅需要的几个静态文件。`webpack` 有着十分丰富的配置项，提供了十分强大的扩展能力，可以在打包构建的过程中做很多事情。我们先来看一下 `webpack` 中的几个基本概念。
 
@@ -274,7 +274,7 @@ npm run start
 
 `webpack-dev-server` 默认使用 `8080` 端口，如果你使用了 `html-webpack-plugin` 来构建 HTML 文件，并且有一个 `index.html` 的构建结果，那么直接访问 http://localhost:8080/ 就可以看到 `index.html` 页面了。如果没有 HTML 文件的话，那么 `webpack-dev-server` 会生成一个展示静态资源列表的页面。
 
-![webpack-dev-server 资源列表](https://user-gold-cdn.xitu.io/2018/3/19/1623bff0f463e073?w=1822&h=284&f=png&s=42237)
+![image-20211217192337706](../image/image-20211217192337706.png)
 
 ## 配置
 
@@ -1650,11 +1650,11 @@ module.exports = {
 
 了解这个概念后，我们来看一下 `HMR` 的大致运行流程图。
 
-![hmr flow chart](https://user-gold-cdn.xitu.io/2018/3/19/1623bffb086c3918?w=1272&h=890&f=png&s=218413)
+![image-20211217192421431](../image/image-20211217192421431.png)
 
 当你使用前面的配置启动了支持 `HMR` 的 `webpack-dev-server`，然后在浏览器打开页面时，你也可以从控制台看到大概的 `HMR` 执行流程：
 
-![hmr log in console](https://user-gold-cdn.xitu.io/2018/3/19/1623c0004b223528?w=396&h=122&f=png&s=18243)
+![image-20211217192525369](../image/image-20211217192525369.png)
 
 开启了 hot 功能的 `webpack` 会往我们应用的主要代码中添加 `WS` 相关的代码，用于和服务器保持连接，等待更新动作。
 
@@ -2402,9 +2402,9 @@ module.exports = {
 
 > 6 entries, `dev` mode, source maps off, using a bunch of loaders and `plugins. dat` speed ⚡️
 
-![speed webpack of 4.x](https://user-gold-cdn.xitu.io/2018/3/26/1625e0823c392a55?w=498&h=164&f=jpeg&s=26258)
+![image-20211217192641470](../image/image-20211217192641470.png)
 
-![speed webpack of 3.x](https://user-gold-cdn.xitu.io/2018/3/26/1625e086a5d544ac?w=440&h=154&f=jpeg&s=18411)
+![image-20211217192635585](../image/image-20211217192635585.png)
 
 从这个对比的例子上看，`4.x` 的构建性能对比 `3.x` 是有很显著的提高，而 `webpack` 官方后续计划加入多核运算，持久化缓存等特性来进一步提升性能（可能要等到 `5.x` 版本了），所以，及时更新 `webpack` 版本，也是提升构建性能的一个有效方式。
 
@@ -2863,7 +2863,7 @@ output: {
 
 这样就可以把分离出来的文件名称用 `lodash` 标识了，如下图：
 
-![dynamic-import](https://user-gold-cdn.xitu.io/2018/3/19/1623c0221f015c5d?w=1148&h=216&f=png&s=86642)
+![image-20211217192716012](../image/image-20211217192716012.png)
 
 如果没有添加注释 `webpackChunkName: "lodash"` 以及 `output.chunkFilename` 配置，那么分离出来的文件名称会以简单数字的方式标识，不便于识别。
 

@@ -1835,21 +1835,21 @@ if (!oldStartVnode) {
 
 首先是 `oldStartVnode` 与 `newStartVnode` 符合 `sameVnode` 时，说明老 VNode 节点的头部与新 VNode 节点的头部是相同的 VNode 节点，直接进行 `patchVnode`，同时 `oldStartIdx` 与 `newStartIdx` 向后移动一位。
 
-![](https://user-gold-cdn.xitu.io/2018/1/2/160b71f5a48631f4?w=618&h=251&f=png&s=19993)
+![image-20211217193153827](../image/image-20211217193153827.png)
 
 其次是 `oldEndVnode` 与 `newEndVnode` 符合 `sameVnode`，也就是两个 VNode 的结尾是相同的 VNode，同样进行 `patchVnode` 操作并将 `oldEndVnode` 与 `newEndVnode` 向前移动一位。
 
-![](https://user-gold-cdn.xitu.io/2018/1/2/160b7228b9ecb23a?w=753&h=235&f=png&s=20727)
+![image-20211217193233616](../image/image-20211217193233616.png)
 
 接下来是两种交叉的情况。
 
 先是 `oldStartVnode` 与 `newEndVnode` 符合 `sameVnode` 的时候，也就是老 VNode 节点的头部与新 VNode 节点的尾部是同一节点的时候，将 `oldStartVnode.elm` 这个节点直接移动到 `oldEndVnode.elm` 这个节点的后面即可。然后 `oldStartIdx` 向后移动一位，`newEndIdx` 向前移动一位。
 
-![](https://user-gold-cdn.xitu.io/2018/1/2/160b723af0fd706a?w=1540&h=776&f=png&s=105982)
+![image-20211217193242772](../image/image-20211217193242772.png)
 
 同理，`oldEndVnode` 与 `newStartVnode` 符合 `sameVnode` 时，也就是老 VNode 节点的尾部与新 VNode 节点的头部是同一节点的时候，将 `oldEndVnode.elm` 插入到 `oldStartVnode.elm` 前面。同样的，`oldEndIdx` 向前移动一位，`newStartIdx` 向后移动一位。
 
-![](https://user-gold-cdn.xitu.io/2018/1/2/160b72ae720954cd?w=810&h=432&f=png&s=42179)
+![image-20211217193254282](../image/image-20211217193254282.png)
 
 最后是当以上情况都不符合的时候，这种情况怎么处理呢？
 
@@ -1927,7 +1927,7 @@ if (!idxInOld) {
 
 否则如果找到了节点，同时它符合 `sameVnode`，则将这两个节点进行 `patchVnode`，将该位置的老节点赋值 undefined（之后如果还有新节点与该节点key相同可以检测出来提示已有重复的 key ），同时将 `newStartVnode.elm` 插入到 `oldStartVnode.elm` 的前面。同理，`newStartIdx` 往后移动一位。
 
-![](https://user-gold-cdn.xitu.io/2018/1/2/160b73aa8f758342?w=750&h=373&f=png&s=38696)
+![image-20211217193310841](../image/image-20211217193310841.png)
 
 ```
 else {
@@ -1945,7 +1945,7 @@ else {
 
 如果不符合 `sameVnode`，只能创建一个新节点插入到 `parentElm` 的子节点中，`newStartIdx` 往后移动一位。
 
-![](https://user-gold-cdn.xitu.io/2018/1/2/160b73f50ed43932?w=927&h=462&f=png&s=44122)
+![image-20211217193318484](../image/image-20211217193318484.png)
 
 ```
 else {
@@ -1958,11 +1958,11 @@ else {
 
 最后一步就很容易啦，当 `while` 循环结束以后，如果 `oldStartIdx > oldEndIdx`，说明老节点比对完了，但是新节点还有多的，需要将新节点插入到真实 DOM 中去，调用 `addVnodes` 将这些节点插入即可。
 
-![](https://user-gold-cdn.xitu.io/2018/1/2/160b7457cae26687?w=784&h=373&f=png&s=32202)
+![image-20211217193331231](../image/image-20211217193331231.png)
 
 同理，如果满足 `newStartIdx > newEndIdx` 条件，说明新节点比对完了，老节点还有多，将这些无用的老节点通过 `removeVnodes` 批量删除即可。
 
-![](https://user-gold-cdn.xitu.io/2018/1/2/160b744a2c07257d?w=836&h=367&f=png&s=34864)
+![image-20211217193338496](../image/image-20211217193338496.png)
 
 ```
 if (oldStartIdx > oldEndIdx) {
@@ -2021,7 +2021,7 @@ export default {
 
 Vue.js 肯定不会以如此低效的方法来处理。Vue.js在默认情况下，每次触发某个数据的 `setter` 方法后，对应的 `Watcher` 对象其实会被 `push` 进一个队列 `queue` 中，在下一个 tick 的时候将这个队列 `queue` 全部拿出来 `run`（ `Watcher` 对象的一个方法，用来触发 `patch` 操作） 一遍。
 
-![](https://user-gold-cdn.xitu.io/2018/1/24/161285d6b2d9e6bd?w=350&h=404&f=png&s=16724)
+![image-20211217193352560](../image/image-20211217193352560.png)
 
 那么什么是下一个 tick 呢？
 
@@ -2201,7 +2201,7 @@ watch2视图更新啦～
 
 当我们使用 Vue.js 来开发一个单页应用时，经常会遇到一些组件间共享的数据或状态，或是需要通过 props 深层传递的一些数据。在应用规模较小的时候，我们会使用 props、事件等常用的父子组件的组件间通信方法，或者是通过事件总线来进行任意两个组件的通信。但是当应用逐渐复杂后，问题就开始出现了，这样的通信方式会导致数据流异常地混乱。
 
-![](https://user-gold-cdn.xitu.io/2018/2/9/1617a011064cc43e?w=632&h=361&f=png&s=24741)
+![image-20211217193417998](../image/image-20211217193417998.png)
 
 这个时候，我们就需要用到我们的状态管理工具 Vuex 了。Vuex 是一个专门为 Vue.js 框架设计的、专门用来对于 Vue.js 应用进行状态管理的库。它借鉴了 Flux、redux 的基本思想，将状态抽离到全局，形成一个 Store。因为 Vuex 内部采用了 new Vue 来将 Store 内的数据进行「响应式化」，所以 Vuex 是一款利用 Vue 内部机制的库，与 Vue 高度契合，与 Vue 搭配使用显得更加简单高效，但缺点是不能与其他的框架（如 react）配合使用。
 
@@ -2361,7 +2361,7 @@ Vuex 本身代码不多且设计优雅，非常值得一读，想阅读源码的
 
 在本小册的第一节中，笔者对 Vue.js 内部运行机制做了一个全局的概览，当时通过下面这张图把 Vue.js 拆分成一个一个小模块来介绍，之后通过这一系列小节的学习，相信大家已经对 Vue.js 内部的原理有了一个更进一步的了解，对这张图也再也不会感觉到那么陌生。
 
-![](https://user-gold-cdn.xitu.io/2017/12/19/1606e7eaa2a664e8?w=1752&h=1216&f=png&s=190985)
+![image-20211217193433302](../image/image-20211217193433302.png)
 
 每个小节中的代码都是笔者根据 Vue.js 原理单独抽离出来写成的 Demo，大家可以在我的 [Gtihub](https://github.com/answershuto) 上查看完整的代码 (见 [VueDemo](https://github.com/answershuto/VueDemo) 项目)。
 
