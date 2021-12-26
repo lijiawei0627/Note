@@ -96,7 +96,7 @@ module.exports = {
 module.exports = {
   // ...
   output: {
-    filename: '[name].js',
+    filename: '[name].js', // 使用 [name] 来引用 entry 名称，在这里即为 main
     path: __dirname + '/dist/[hash]',
   },
 }
