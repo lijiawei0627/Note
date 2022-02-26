@@ -2177,3 +2177,584 @@ module.exports = function(content, sourceMap) {
 
 # 五、样式处理
 
+除了`JavaScript`以外，在打包方面另一个重要的工作就是样式处理。在具有一定规模的工程中，由于手工维护`CSS`成本过于高昂，我们可能会需要更智能的方案来**解决浏览器兼容性问题，更优雅地处理组件间的样式隔离，甚至是借助一些更强大的语言特性来实现各种各样的需求。可以使用`Webpack`结合各种样式的编译器、转换器以及插件来提升开发效率。**
+
+## 分离样式文件
+
+让我们从最简单的情况说起——处理工程中的纯`CSS`。上一章介绍`loader`的时候我们提到过`style-loader`与`css-loader`，通过`JS`引用`CSS`的方式打包样式，可以更清晰地描述模块间的依赖关系。
+
+然而，当时还有一个问题没有解决，我们是通过附加`style`标签的方式引入样式的，那么如何输出单独的`CSS`文件呢？**一般来说，在生产环境下，我们希望样式存在于`CSS`文件中而不是`style`标签中，因为文件更有利于客户端进行缓存。`Webpack`社区有专门的插件：`extract-text-webpack-plugin`（适用于`Webpack 4`之前版本）和`mini-css-extract-plugin`（适适用于`Webpack 4`及以上版本），它们就是专门用于提取样式到`CSS`文件的。**
+
+### `extract-text-webpack-plugin`
+
+我们先通过一个简单的例子来直观认识该插件是如何工作的。使用`npm`安装：
+
+```bash
+npm install extract-text-webpack-plugin
+```
+
+在`webpack.config.js`中引入：
+
+```javascript
+const ExtractTextPlugin = require('extract-text-webpack-plugin');
+module.exports = {
+    entry: './app.js',
+    output: {
+        filename: 'bundle.js',
+    },
+    mode: 'development',
+    module: {
+        rules: [
+            {
+                test: /\.css$/,
+                use: ExtractTextPlugin.extract({
+                    fallback: 'style-loader'，
+                    use: 'css-loader',
+                }),
+            }
+        ],
+    },
+    plugins: [
+        new ExtractTextPlugin("bundle.css")
+    ],
+};
+```
+
+**在`module.rules`中我们设置了处理`CSS`文件的规则，其中的`use`字段并没有直接传入`loader`，而是使用了插件的`extract`方法包了一层。内部的`fallback`属性用于指定当插件无法提取样式时所采用的`loader`（目前还接触不到这种场景，后面会介绍），`use`（`extract`方法里面的）用于指定在提取样式之前采用哪些`loader`来预先进行处理。除此之外，还要在`Webpack`的`plugins`配置中添加该插件，并传入提取后的资源文件名。**
+
+这应该是本书中第一次使用`Webpack的plugins`配置，这里做一个简要介绍。**`plugins`用于接收一个插件数组，我们可以使用`Webpack`内部提供的一些插件，也可以加载外部插件。**`Webpack`为插件提供了各种`API`，使其可以在打包的各个环节中添加一些额外任务，就像`extract-text-webpack-plugin`所实现的样式提取一样。随着更多插件的介绍，我们会逐渐深入了解`Webpack`的插件机制。
+
+下面让我们测试一下`extract-text-webpack-plugin`的效果。在工程目录下分别创建`index.js`和`style.css`：
+
+```javascript
+// index.js
+import './style.css';
+document.write('My Webpack app');
+
+/* style.css */
+body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+```
+
+打包结果如图5-1所示。
+
+![image-20220226170744755](../image/image-20220226170744755.png)
+
+可以看到`Asset`中增加了`bundle.css`，正是我们在插件中指定的文件名。
+
+### 多样式文件的处理
+
+**样式的提取是以资源入口开始的整个`chunk`为单位的（重温一下`chunk`的概念：`chunk`是对一组有依赖关系的模块的封装）。假设我们的应用从`index.js`开始一层层引入了几百个模块，也许其中很多模块都引入了各自的样式，但是最终只会生成一个`CSS`文件，因为它们都来自同一个入口模块。**
+
+**上面我们将`bundle.css`作为文件名传给了`extract-text-webpack-plugin`，但当工程有多个入口时就会发生重名问题。**就像在前面的章节中我们配置动态的`output.filename`一样，这里我们也要对插件提取的`CSS`文件使用类似模板的命名方式。
+
+请看下面的例子：
+
+```javascript
+// ./src/scripts/foo.js
+import '../styles/foo-style.css';
+document.write('foo.js');
+
+// ./src/scripts/bar.js
+import '../styles/bar-style.css';
+document.write('bar.js');
+
+/* ./src/styles/foo-style.css */
+body { background-color: #eee; }
+
+/* ./src/styles/bar-style.css */
+body { color: #09c; }
+```
+
+假设我们有`foo.js`和`bar.js`，并且它们分别引用了`foo-style.css和bar-style.css`，现在我们要通过配置使它们输出各自的`CSS`文件。请看下面的配置：
+
+```javascript
+// webpack.config.js
+const ExtractTextPlugin = require('extract-text-webpack-plugin');
+
+module.exports = {
+    entry: {
+        foo: './src/scripts/foo.js',
+        bar: './src/scripts/bar.js',
+    },
+    output: {
+        filename: '[name].js',
+    },
+    mode: 'development',
+    module: {
+        rules: [
+            {
+                test: /\.css$/,
+                use: ExtractTextPlugin.extract({
+                    fallback: 'style-loader',
+                    use: 'css-loader',
+                }),
+            }
+        ],
+    },
+    plugins: [
+        new ExtractTextPlugin('[name].css')
+    ],
+};
+```
+
+我们使用了`[name].css`来动态生成`CSS`为文件名。那么问题来了，这里的`[name]`指代的是谁的名字呢？是引用者的文件名（`foo.js、bar.js`），还是`CSS`的文件名（`foo-style.css、bar-style.css`）？答案是二者都不是，**这里的[`name`]和在`output.filename`中的意义一样，都是指代`chunk`的名字，即`entry`中我们为每一个入口分配的名字（`foo、bar`）。**我们可以来验证一下打包结果，如图5-2所示。
+
+![image-20220226171258305](../image/image-20220226171258305.png)
+
+从上面可以看出，实际情况和我们的预想相符，`[name]`指代的是`chunk`的名字，`Asset与Chunk Names`是相对应的。
+
+### `mini-css-extract-plugin`
+
+`mini-css-extract-plugin`可以理解成`extract-text-webpack-plugin`的升级版，它拥有更丰富的特性和更好的性能，从Webpack 4开始官方推荐使用该插件进行样式提取（`Webpack 4`以前的版本是用不了的）。
+
+说到`mini-css-extract-plugin`的特性，最重要的就是它**支持按需加载`CSS`**，以前在使用`extract-text-webpack-plugin`的时候我们是做不到这一点的。
+
+举个例子，**在`extract-text-webpack-plugin`中，`a.js`通过`import()`函数异步加载了`b.js`，`b.js`里面加载了`style.css`，那么`style.css`最终只能被同步加载（通过`HTML`的`link`标签）**。
+
+但是**现在`mini-css-extract-plugin`会单独打包出一个`0.css`（假设使用默认配置），这个`CSS`文件将由`a.js`通过动态插入link标签的方式加载。**
+
+请看下面的例子：
+
+```javascript
+// app.js
+import './style.css';
+import('./next-page');
+document.write('app.js<br/>');
+
+// next-page.js
+import './next-page.css';
+document.write('Next page.<br/>');
+
+/* style.css */
+body { background-color: #eee; }
+
+/* next-page.css */
+body { background-color: #999; }
+
+// webpack.config.js
+const MiniCssExtractPlugin = require('mini-css-extract-plugin');
+module.exports = {
+  entry: './app.js',
+  output: {
+    filename: '[name].js',
+  },
+  mode: 'development',
+  module: {
+    rules: [{
+      test: /\.css$/,
+      use: [
+        {
+          loader: MiniCssExtractPlugin.loader,
+          options: {
+            publicPath: '../',
+          },
+        },
+        'css-loader'
+      ],
+    }],
+  },
+  plugins: [
+    new MiniCssExtractPlugin({
+      filename: '[name].css',
+      chunkFilename: '[id].css',
+    })
+  ]
+};
+```
+
+在配置上`mini-css-extract-plugin`与`extract-text-webpack-plugin`有以下几点不同：
+
+* **`loader`规则设置的形式不同，并且`mini-css-extract-plugin`支持配置`publicPath`，用来指定异步`CSS`的加载路径。**
+* 不需要设置`fallback`。
+* **在`plugins`设置中，除了指定同步加载的`CSS`资源名（`filename`），还要指定异步加载的`CSS`资源名（`chunkFilename`）。**
+
+我们来看一下上面例子的实际运行情况。如图5-3所示。
+
+![image-20220226171908978](../image/image-20220226171908978.png)
+
+总体来说，`mini-css-extract-plugin`还是与`extract-text-webpack-plugin`十分相似的，关于它更高级的用法请参阅其[官方文档](https://github.com/webpack-contrib/mini-css-extract-plugin)。
+
+## 样式预处理
+
+样式预处理指的是在开发中我们经常会使用一些样式预编译语言，如`SCSS、Less`等，在项目打包过程中再将这些预编译语言转换为`CSS`。借助这些语言强大和便捷的特性，可以降低项目的开发和维护成本。下面我们介绍目前最主流的两种预编译语言是如何配置的。
+
+### `Sass与SCSS`
+
+`Sass`本身是对`CSS`的语法增强，它有两种语法，现在使用更多的是`SCSS`（对`CSS3`的扩充版本）。所以你会发现，在安装和配置`loader`时都是`sass-loader`，而实际的文件后缀是`.scss`。
+
+`sass-loader`就是将`SCSS`语法编译为`CSS`，因此在使用时通常还要搭配`css-loader和style-loader`。**类似于我们装`babel-loader`时还要安装`babel-core`，`loader`本身只是编译核心库与`Webpack`的连接器，因此这里我们除了`sass-loader`以外还要安装`node-sass，node-sass`是真正用来编译`SCSS`的，而`sass-loader`只是起到黏合的作用。**
+
+安装命令如下：
+
+```bash
+npm install sass-loader node-sass
+```
+
+安装`node-sass`时需要下载一个系统相关的二进制包，这个二进制包通常下载较慢，甚至有可能超时，因此通常我们会为其设置一个`cnpm`的镜像地址。可使用如下命令：
+
+```bash
+npm config set sass_binary_site=https://npm.taobao.org/mirrors/node-sass/
+```
+
+此时再运行上面安装`node-sass`的命令，速度应该会快很多。
+
+接着我们来添加处理`SCSS`文件的`Webpack`配置。
+
+```javascript
+module: {
+    rules: [
+        {
+            test: /\.scss$/,
+            use: ['style-loader', 'css-loader', 'sass-loader'],
+        }
+    ],
+},
+```
+
+现在让我们写一段`SCSS`并从`JS`引入。
+
+```JavaScript
+// style.scss
+$primary-color: #09c;
+.container {
+    .title {
+        color: $primary-color;
+    }
+}
+
+// index.js
+import './style.scss';
+```
+
+运行`Webpack`打包，它将会被编译为以下形式：
+
+```css
+.container .title {
+    color: #09c;
+}
+```
+
+**值得一提的是，假如我们想要在浏览器的调试工具里查看源码，需要分别为`sass-loader和css-loader`单独添加`source map`的配置项。**
+
+```javascript
+module: {
+    rules: [
+        {
+            test: /\.scss$/,
+            use: [
+                'style-loader',
+                {
+                    loader: 'css-loader',
+                    options: {
+                        sourceMap: true,
+                    },
+                }, {
+                    loader: 'sass-loader',
+                    options: {
+                        sourceMap: true,
+                    },
+                }
+            ],
+        }
+    ],
+},
+```
+
+### `Less`
+
+`Less`同样是对`CSS`的一种扩展。与`SCSS`类似，它也需要安装`loader`和其本身的编译模块。安装命令如下：
+
+```bash
+npm install less-loader less
+```
+
+在配置上也与`SCSS`十分类似。
+
+```javascript
+module: {
+    rules: [
+        {
+            test: /\.less/,
+            use: [
+                'style-loader',
+                {
+                    loader: 'css-loader',
+                    options: {
+                        sourceMap: true,
+                    },
+                }, {
+                    loader: 'less-loader',
+                    options: {
+                        sourceMap: true,
+                    },
+                }
+            ],
+        }
+    ],
+},
+```
+
+同样让我们写一段`Less`并使用`JS`引入。
+
+```javascript
+// style.less
+@primary-color: #09c;
+.container {
+    .title {
+        color: @primary-color;
+    }
+}
+
+// index.js
+import './style.less';它将会被编译为以下形式：
+.container .title {
+    color: #09c;
+}
+```
+
+`Less`支持多种编译过程中的配置，我们可以直接通过`loader`的`options`将这些配置传入（注意使用驼峰命名法命名），具体的配置请参考其[官方文档](http://lesscss.org/usage/#less-options)。
+
+## `PostCSS`
+
+**严格说来，`PostCSS`并不能算是一个`CSS`的预编译器，它只是一个编译插件的容器。**它的工作模式是接收样式源代码并交由编译插件处理，最后输出`CSS`。开发者可以自己指定使用哪些插件来实现特定的功能。下面会介绍几个常见的`PostCSS`使用案例，通过这些例子我们可以更好地了解它能做哪些事情及应该如何配置。
+
+### `PostCSS与Webpack`
+
+使用`postcss-loader`可以轻松地将`PostCSS与Webpack`连接起来。使用`npm`进行安装。
+
+```bash
+npm install postcss-loader
+```
+
+配置起来也很简单。
+
+```javascript
+module: {
+    rules: [
+        {
+            test: /\.css/,
+            use: [
+                'style-loader',
+                'css-loader',
+                'postcss-loader',
+            ] ,
+        }
+    ],
+},
+```
+
+**`postcss-loader`可以结合`css-loader`使用，也可以单独使用，也就是说不配置`css-loader`也可以达到相同的效果。唯一不同的是，单独使用`postcss-loader`时不建议使用`CSS`中的`@import`语句，否则会产生冗余代码，因此官方推荐还是将`postcss-loader`放在`css-loader`之后使用。**
+
+除此之外，`PostCSS`要求必须有一个单独的配置文件。在最初的版本中，其配置是可以通过`loader`来传入的，而在`Webpack 2`对配置添加了更严格的限制之后，`PostCSS`不再支持从`loader`传入。因此我们**需要在项目的根目录下创建一个`postcss.config.js`。目前我们还没有添加任何特性，因此暂时返回一个空对象即可。**
+
+```javascript
+// postcss.config.js
+module.exports = {};
+```
+
+此时，我们只是配置了`postcss-loader`，但还没有发挥其真正的效用。下面我们来看看使用`PostCSS`可以做哪些有趣的事情。
+
+### 自动前缀
+
+**`PostCSS`一个最广泛的应用场景就是与`Autoprefixer`结合，为`CSS`自动添加厂商前缀。**`Autoprefixer`是一个样式工具，可以根据`caniuse.com`上的数据，自动决定是否要为某一特性添加厂商前缀，并且可以由开发者为其指定支持浏览器的范围。
+
+使用`npm`安装。
+
+```bash
+npm install autoprefixer
+```
+
+在`postcss.config.js`中添加`autoprefixer`。
+
+```javascript
+const autoprefixer = require('autoprefixer');
+module.exports = {
+    plugins: [
+        autoprefixer({
+            grid: true,
+            browsers: [
+                '> 1%',
+                'last 3 versions',
+                'android 4.2',
+                'ie 8',
+            ],
+        })
+    ],
+};
+```
+
+我们可以在`autoprefixer`中添加需要支持的特性（如`grid`）以及兼容哪些浏览器（`browsers`）。配置好之后，我们就可以使用一些较新的`CSS`特性。如：
+
+```css
+.container {
+    display: grid;
+}
+```
+
+由于我们指定了`grid：true`，也就是为`grid`特性添加`IE`前缀，经过编译后则会成为：
+
+```css
+.container {
+    display: -ms-grid;
+    display: grid;
+}
+```
+
+### `stylelint`
+
+**`stylelint`是一个`CSS`的质量检测工具，就像`eslint`一样，我们可以为其添加各种规则，来统一项目的代码风格，确保代码质量。**
+
+使用`npm`安装。
+
+```bash
+npm install stylelint
+```
+
+在`postcss.config.js`中添加相应配置。
+
+```javascript
+const stylelint = require('stylelint');
+module.exports = {
+    plugins: [
+        stylelint({
+            config: {
+                rules: {
+                    'declaration-no-important': true,
+                },
+            },
+        })
+    ],
+};
+```
+
+这里我们**添加了`declaration-no-important`这样一条规则，当我们的代码中出现了`“！important”`时就会给出警告。**比如下面的代码：
+
+```css
+body {
+    color: #09c!important;
+}
+```
+
+执行打包时会在控制台输出警告信息，如图5-4所示。
+
+![image-20220226174256665](../image/image-20220226174256665.png)
+
+使用`stylelint`可以检测出代码中的样式问题（语法错误、重复的属性等），帮助我们写出更加安全并且风格更加一致的代码。
+
+### `CSSNext`
+
+**`PostCSS`可以与`CSSNext`结合使用，让我们在应用中使用最新的`CSS`语法特性。**
+
+使用`npm`安装。
+
+```bash
+npm install postcss-cssnext
+```
+
+在`postcss.config.js`中添加相应配置。
+
+```javascript
+const postcssCssnext = require('postcss-cssnext');
+module.exports = {
+    plugins: [
+        postcssCssnext({
+            // 指定所支持的浏览器
+            browsers: [
+                '> 1%',
+                'last 2 versions',
+            ],
+        })
+    ],
+};
+```
+
+**指定好需要支持的浏览器之后，我们就可以顺畅地使用`CSSNext`的特性了。`PostCSS`会帮我们把`CSSNext`的语法翻译为浏览器能接受的属性和形式。**比如下面的代码：
+
+```css
+/* style.css */
+:root {
+    --highlightColor: hwb(190, 35%, 20%);
+}
+body {
+    color: var(--highlightColor);
+}
+```
+
+打包后的结果如下：
+
+```javascript
+body {
+    color: rgb(89, 185, 204);
+}
+```
+
+## `CSS Modules`
+
+**`CSS Modules`是近年来比较流行的一种开发模式，其理念就是把`CSS`模块化，让`CSS`也拥有模块的特点**，具体如下：
+
+* 每个`CSS`文件中的样式都**拥有单独的作用域，不会和外界发生命名冲突。**
+* **对`CSS`进行依赖管理，可以通过相对路径引入`CSS`文件。**
+* **可以通过`composes`轻松复用其他`CSS`模块。**
+
+使用`CSS Modules`不需要额外安装模块，只要开启`css-loader`中的`modules`配置项即可。
+
+```javascript
+module: {
+    rules: [
+        {
+            test: /\.css/,
+            use: [
+                'style-loader',
+                {
+                    loader: 'css-loader',
+                    options: {
+                        modules: true,
+                        localIdentName: '[name]__[local]__[hash:base64:5]',
+                    },
+                }
+            ],
+        }
+    ],
+},
+```
+
+这里比较值得一提的是`localIdentName`配置项，它用于指明`CSS`代码中的类名会如何来编译。假设源码是下面的形式：
+
+```css
+/* style.css */
+.title {
+    color: #f938ab;
+}
+```
+
+经过编译后可能将成为`.style__title__1CFy6`。让我们依次对照上面的配置：
+
+* `[name]`指代的是模块名，这里被替换为`style`。
+* `[local]`指代的是原本的选择器标识符，这里被替换为`title`。
+* `[hash：base64：5]`指代的是一个5位的`hash`值，这个`hash`值是根据模块名和标识符计算的，因此不同模块中相同的标识符也不会造成样式冲突。
+
+在使用的过程中我们还要注意在`JavaScript`中引入`CSS`的方式。之前只是直接将`CSS`文件引入就可以了，但使用`CSS Modules`时`CSS`文件会导出一个对象，我们需要把这个对象中的属性添加到`HTML`标签上。请看下面的示例：
+
+```javascript
+/* style.css */
+.title {
+    color: #f938ab;
+}
+
+// app.js
+import styles from './style.css';
+document.write(`<h1 class="${styles.title}">My Webpack app.</h1>`);
+```
+
+最终这个`HTML`中的`class`才能与我们编译后的`CSS`类名匹配上。
+
+## 小结
+
+1. 通过`SCSS、Less`等预编译样式语言来提升开发效率，降低代码复杂度。
+2. 通过`PostCSS`包含的很多功能强大的插件，可以让我们使用更新的`CSS`特性，保证更好的浏览器兼容性。
+3. 通过`CSS Modules`可以让`CSS`模块化，避免样式冲突。
