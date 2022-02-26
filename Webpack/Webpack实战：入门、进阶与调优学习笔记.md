@@ -1353,3 +1353,827 @@ module.exports = {
 1. **在配置打包入口时，`context`相当于路径前缀，`entry`是入口文件路径。单入口的`chunk name`不可更改，多入口的话则必须为每一个`chunk`指定`chunk name`。**
 2. **当第三方依赖较多时，我们可以用提取`vendor`的方法将这些模块打包到一个单独的`bundle`中，以更有效地利用客户端缓存，加快页面渲染速度。**
 3. **`path和publicPath`的区别在于`path`指定的是资源的输出位置，而`publicPath`指定的是间接资源的请求位置。**
+
+# 四、预处理器（`loader`）
+
+对于工程中其他类型的资源，如`HTML`、`CSS`、模板、图片、字体等，可以使用预处理器（`loader`）来处理，它赋予了`Webpack`可处理不同资源类型的能力，极大丰富了其可扩展性。
+
+## 一切皆模块
+
+一个`Web`工程通常会包含`HTML、JS、CSS`、模板、图片、字体等多种类型的静态资源，并且这些资源之间都存在着某种联系。比如，`JS`文件之间有互相依赖的关系，在`CSS`中可能会引用图片和字体等。**对于`Webpack`来说，所有这些静态资源都是模块，我们可以像加载一个`JS`文件一样去加载它们**，如在`index.js`中加载`style.css`：
+
+```javascript
+// index.js
+import './style.css';
+```
+
+对于刚开始接触`Webpack`的人来说，可能会认为这个特性很神奇，甚至会觉得不解：从`JS`中加载`CSS`文件具有怎样的意义呢？从结果来来看，其实和之前并没有什么差别，这个`style.css`可以被打包并生成在输出资源目录下，对`index.js`文件也不会产生实质性的影响。**这句引用的实际意义是描述了`JS`文件与`CSS`文件之间的依赖关系。**
+
+假设有这样一个场景，项目中的某个页面使用到了一个日历组件，我们很自然地需要将它加载进来，如：
+
+```javascript
+// ./page/home/index.js
+import Calendar from './ui/calendar/index.js';
+```
+
+但是加载了其`JS`文件还不够，我们仍然需要引入`calendar`组件的样式。比如下面的代码（以`SCSS`为例）：
+
+```javascript
+// ./page/home/style.scss
+@import './ui/calendar/style.scss';
+```
+
+而实际上，通过`Webpack`我们可以采用一种更简洁的方式来表达这种依赖关系。
+
+```javascript
+// ./ui/calendar/index.js
+import './style.scss'; // 引用组件自身样式
+...
+
+// ./page/home/index.js
+import Calendar from './ui/calendar/index.js';
+import './style.scss'; // 引用页面自身样式
+```
+
+可以看到，**在`calendar`的`JS`中加载了其组件自身的样式，而对于页面来说只要加载`calendar/index.js`即可（以及页面自身的样式），不需要额外引入组件的样式。**让我们以关系图的方式来表示这种变化，如图4-1所示。
+
+![image-20220226153312538](../image/image-20220226153312538.png)
+
+**左边是`JS`和样式分开处理的情况，我们需要分别维护组件`JS和SCSS`加载**，每当我们添加或者删除一个组件的时候，都要进行两次操作：引入`JS`、引入`SCSS`或者删除`JS`、删除`SCSS`；图4-1**右边是使用`Webpack将SCSS`通过`JS`来引入的情况，可以看到，组件的`JS`和`SCSS`作为一个整体被页面引入进来，这样就更加清晰地描述了资源之间的关系。**当移除这个组件时，也只要移除对于组件`JS`的引用即可。人为的工作总难免出错，而让`Webpack`维护模块间的关系可以使工程结构更加直观，代码的可维护性更强。
+
+另外，我们知道，模块是具有高内聚性及可复用性的结构，通过`Webpack`“一切皆模块”的思想，我们可以将模块的这些特性应用到每一种静态资源上面，从而设计和实现出更加健壮的系统。
+
+## `loader`概述
+
+每个`loader`本质上都是一个函数。在`Webpack 4`之前，函数的输入和输出都必须为字符串；**在`Webpack 4`之后，`loader`也同时支持抽象语法树（`AST`）的传递，通过这种方法来减少重复的代码解析。**用公式表达`loader`的本质则为以下形式：
+
+```javascript
+output=loader(input)
+```
+
+这里的`input`可能是工程源文件的字符串，也可能是上一个`loader`转化后的结果，包括**转化后的结果（也是字符串类型）、`source map`，以及`AST`对象；**output同样包含这几种信息，转化后的文件字符串、`source map`，以及`AST`。如果这是最后一个`loader`，结果将直接被送到`Webpack`进行后续处理，否则将作为下一个`loader`的输入向后传递。
+
+举一个例子，当我们使用`babel-loader`将`ES6+`的代码转化为`ES5`时上面的公式如下：
+
+```javascript
+ES5=babel-loader(ES6+)
+```
+
+**`loader`可以是链式的。我们可以对一种资源设置多个`loader`，第一个`loader`的输入是文件源码，之后所有`loader`的输入都为上一个`loader`的输出。**用公式表达则为以下形式；
+
+```javascript
+output=loaderA(loaderB(loaderC(input)))
+```
+
+如在工程中编译`SCSS`时，我们可能需要如下`loader`：
+
+```javascript
+Style标签=style-loader(css-loader(sass-loader(SCSS)))
+```
+
+### 源码结构
+
+为了更好地阐释`loader`是如何工作的，下面来看一下`loader`的源码结构：
+
+```javascript
+module.exports = function loader (content, map, meta) {
+   var callback = this.async();
+   var result = handler(content, map, meta);
+   callback(
+       null,           // error
+       result.content, // 转换后的内容
+       result.map,     // 转换后的 source-map
+       result.meta,    // 转换后的 AST
+   );
+};
+```
+
+从上面代码可以看出，**`loader`本身就是一个函数，在该函数中对接收到的内容进行转换，然后返回转换后的结果（可能包含`source map`和`AST`对象）。**
+
+## `loader`的配置
+
+上面我们介绍的只是抽象理论层面的东西，在应用层面上要如何具体实施呢？首先我们要面临的问题是静态资源的类型是各式各样的，如何让`Webpack`处理这么多种类型的资源呢？此时就要借助`loader`了。
+
+`loader`的字面意思是装载器，在`Webpack`中它的实际功能则更像是预处理器。**`Webpack`本身只认识`JavaScript`，对于其他类型的资源必须预先定义一个或多个`loader`对其进行转译，输出为`Webpack`能够接收的形式再继续进行，因此`loader`做的实际上是一个预处理的工作。**
+
+### `loader`的引入
+
+假设我们要处理`CSS`，首先依照`Webpack`“一切皆模块”的思想，从一个`JS`文件加载一个`CSS`文件。如：
+
+```javascript
+// app.js
+import './style.css';
+
+// style.css
+body {
+    text-align: center;
+    padding: 100px;
+    color: #fff;
+    background-color: #09c;
+}
+```
+
+此时工程中还没有任何`loader`，如果直接打包会看到报错提示，如图4-2所示。
+
+![image-20220226155333081](../image/image-20220226155333081.png)
+
+`Webpack`无法处理`CSS`语法，因此抛出了一个错误，并提示需要使用一个合适的`loader`来处理这种文件。
+下面我们把`css-loader`加到工程中。`loader`都是一些第三方`npm`模块，`Webpack`本身并不包含任何`loader`，因此使用`loader`的第一步就是先从`npm`安装它。在工程目录下执行命令：
+
+```bash
+npm install css-loader
+```
+
+接下来我们将`loader`引入工程中，具体配置如下：
+
+```javascript
+module.exports = {
+    // ...
+    module: {
+        rules: [{
+            test: /\.css$/,
+            use: ['css-loader'],
+        }],
+    },
+}；
+```
+
+与`loader`相关的配置都在`module`对象中，其中`module.rules`代表了模块的处理规则。每条规则内部可以包含很多配置项，这里我们只使用了最重要的两项—`test`和`use`。
+
+* **`test`可接收一个正则表达式或者一个元素为正则表达式的数组，只有正则匹配上的模块才会使用这条规则。**在本例中以`/\.css$/`来匹配所有以`.css`结尾的文件。
+* **`use`可接收一个数组，数组包含该规则所使用的`loader`。**在本例中只配置了一个`css-loader`，在只有一个`loader`时也可以简化为字符串`“css-loader”`。
+
+此时我们再进行打包，之前的错误应该已经消失了，但是`CSS`的样式仍然没有在页面上生效。这是因为**`css-loader`的作用仅仅是处理`CSS`的各种加载语法（`@import和url()`函数等），如果要使样式起作用还需要`style-loader`来把样式插入页面。`css-loader`与`style-loader`通常是配合在一起使用的。**
+
+### 链式`loader`
+
+很多时候，在处理某一类资源时我们都需要使用多个`loader`。如，对于`SCSS`类型的资源来说，我们需要`sass-loader`来处理其语法，并将其编译为`CSS`；接着再用`css-loader`处理`CSS`的各类加载语法；最后使用`style-loader`来将样式字符串包装成`style`标签插入页面。为了引入`style-loader`，首先还是使用`npm`安装。
+
+```bash
+npm install style-loader
+```
+
+接着之前的配置，更改`rules`中的规则。
+
+```javascript
+module.exports = {
+    // ...
+    module: {
+        rules: [
+            {
+                test: /\.css$/,
+                use: ['style-loader', 'css-loader'],
+            }
+        ],
+    },
+}；
+```
+
+我们把`style-loader`加到了`css-loader`前面，这是因为在`Webpack`打包时是按照**数组从后往前的顺序将资源交给`loader`处理**的，因此要把最后生效的放在前面。
+
+### `loader options`
+
+`loader`作为预处理器通常会给开发者提供一些配置项，在引入`loader`的时候可以通过`options`将它们传入。如：
+
+```javascript
+rules: [
+    {
+        test: /\.css$/,
+        use: [
+            'style-loader',
+            {
+                loader: 'css-loader',
+                options: {
+                    // css-loader 配置项
+                },
+            }
+        ],
+    },
+],
+```
+
+有些`loader`可能会使用`query`来代替`options`，从功能来说它们并没有太大的区别，具体参阅`loader`本身的文档。
+
+### 更多配置
+
+下面介绍其他场景下`loader`的相关配置。
+
+#### `exclude与include`
+
+**`exclude`与`include`是用来排除或包含指定目录下的模块，可接收正则表达式或者字符串（文件绝对路径），以及由它们组成的数组。**请看下面的例子：
+
+```javascript
+rules: [
+ {
+     test: /\.css$/,
+     use: ['style-loader', 'css-loader'],
+     exclude: /node_modules/,
+ }
+],
+```
+
+1. **`exclude`的含义是，所有被正则匹配到的模块都排除在该规则之外**，也就是说`node_modules`中的模块不会执行这条规则。该配置项通常是必加的，否则可能拖慢整体的打包速度。举个例子，在项目中我们经常会使用`babel-loader`（后面章节会介绍）来处理`ES6+`语言特性，但是对于`node_modules`中的`JS`文件来说，很多都是已经编译为`ES5`的，因此没有必要再使用`babel-loader`来进行额外处理。
+   除`exclude`外，使用`include`配置也可以达到类似的效果。请看下面的例子：
+
+   ```javascript
+   rules: [
+       {
+           test: /\.css$/,
+           use: ['style-loader', 'css-loader'],
+           include: /src/,
+       }
+   ],
+   ```
+
+2. **`include`代表该规则只对正则匹配到的模块生效。**假如我们将`include`设置为工程的源码目录，自然而然就将`node_modules`等目录排除掉了。
+
+**`exclude和include`同时存在时，`exclude`的优先级更高。**请看下面的例子：
+
+```javascript
+rules: [
+    {
+        test: /\.css$/,
+        use: ['style-loader', 'css-loader'],
+        exclude: /node_modules/,
+        include: /node_modules\/awesome-ui/,
+    }
+],
+```
+
+此时，`node_modules`已经被排除了，但是假如我们想要让该规则对`node_modules`中的某一个模块生效，即便加上`include`也是无法覆盖`exclude`配置的。要实现这样的需求我们可以更改`exclude`中的正则。
+
+```javascript
+rules: [
+    {
+        test: /\.css$/,
+        use: ['style-loader', 'css-loader'],
+        // 排除node_modules中除了foo和bar以外的所有模块
+        exclude: /node_modules\/(?!(foo|bar)\/).*/,
+    }
+],
+```
+
+另外，由于`exclude`优先级更高，我们可以对`include`中的子目录进行排除。请看下面的例子：
+
+```JavaScript
+rules: [
+    {
+        test: /\.css$/,
+        use: ['style-loader', 'css-loader'],
+        exclude: /src\/lib/,
+        include: /src/,
+    }
+],
+```
+
+通过`include`，我们将该规则配置为仅对`src`目录生效，但是仍然可以通过`exclude`排除其中的`src/lib`目录。
+
+#### `resource与issuer`
+
+**`resource与issuer`可用于更加精确地确定模块规则的作用范围。**请看下面的例子：
+
+```javascript
+// index.js
+import './style.css';
+```
+
+在`Webpack`中，我们认为被加载模块是`resource`，而加载者是`issuer`。如上面的例子中，`resource为/path/of/app/style.css`，`issuer是/path/of/app/index.js`。
+前面介绍的`test、exclude、include`本质上属于对`resource`也就是被加载者的配置，如果想要对`issuer`加载者也增加条件限制，则要额外写一些配置。比如，如果我们只想让`/src/pages`目录下的`JS`可以引用`CSS`，应该如何设置呢？请看下面的例子：
+
+```javascript
+rules: [
+    {
+        test: /\.css$/,
+        use: ['style-loader', 'css-loader'],
+        exclude: /node_modules/,
+        issuer: {
+            test: /\.js$/,
+            include: /src/pages/,
+        },
+    }
+],
+```
+
+可以看到，我们添加了`issuer`配置对象，其形式与之前对`resource`条条件的配置并无太大差异。但只有`/src/pages/`目录下面的`JS`文件引用`CSS`文件，这条规则才会生效；如果不是`JS`文件引用的`CSS`（比如`JSX`文件），或者是别的目录的`JS`文件引用`CSS`，则规则不会生效。上面的配置虽然实现了我们的需求，但是`test、exclude、include`这些配置项分布于不同的层级上，可读性较差。事实上我们还可以将它改为另一种等价的形式。
+
+```javascript
+rules: [
+    {
+        use: ['style-loader', 'css-loader'],
+        resource: {
+            test: /\.css$/,
+            exclude: /node_modules/,
+        },
+        issuer: {
+            test: /\.js$/,
+            exclude: /node_modules/,
+        },
+    }
+],
+```
+
+通过添加`resource`对象来将外层的配置包起来，区分了`resource和issuer`中的规则，这样就一目了然了。上面的配置与把`resource`的配置写在外层在本质上是一样的，然而这两种形式无法并存，只能选择一种风格进行配置。
+#### `enforce`
+
+`enforce`用来指定一个`loader`的种类，只接收`“pre”或“post”`两种字符串类型的值。`Webpack`中的`loader`按照执行顺序可分为`pre、inline、normal、post`四种类型，上面我们直接定义的`loader`都属于`normal`类型，`inline`形式官方已经不推荐使用，而`pre`和`post`则需要使用`enforce`来指定。请看下面的例子：
+
+```javascript
+rules: [
+    {
+        test: /\.js$/,
+        enforce: 'pre',
+        use: 'eslint-loader',
+    }
+],
+```
+
+可以看到，在配置中添加了一个`eslint-loader`来对源码进行质量检测，其`enforce`的值为`“pre”`，代表它将在所有正常`loader`之前执行，这样可以保证其检测的代码不是被其他`loader`更改过的。类似的，如果某一个`loader`是需要在所有`loader`之后执行的，我们也可以指定其`enforce`为`“post”。`
+
+事实上，我们也可以不使用`enforce而`只要保证`loader`顺序是正确的即可。配置`enforce`主要的目的是使模块规则更加清晰，可读性更强，尤其是在实际工程中，配置文件可能达到上百行的情况，难以保证各个`loader`都按照预想的方式工作，使用`enforce`可以强制指定`loader`的作用顺序。
+
+## 常用`loader`介绍
+
+### `babel-loader`
+
+**`babel-loader`用来处理`ES6+`并将其编译为`ES5`，它使我们能够在工程中使用最新的语言特性（甚至还在提案中），同时不必特别关注这些特性在不同平台的兼容问题。**
+在安装时推荐使用以下命令：
+
+```bash
+npm install babel-loader @babel/core @babel/preset-env
+```
+
+各个模块的作用如下。
+
+* **`babel-loader`：它是使`Babel`与`Webpack`协同工作的模块。**
+* **`@babel/core`：顾名思义，它是`Babel`编译器的核心模块。**
+* **`@babel/preset-env`：它是`Babel`官方推荐的预置器，可根据用户设置**
+
+在配置`babel-loader`时有一些需要注意的地方。请看下面的例子：
+
+```JavaScript
+rules: [
+  {
+    test: /\.js$/,
+    exclude: /node_modules/,
+    use: {
+      loader: 'babel-loader',
+      options: {
+        cacheDirectory: true,
+        presets: [[
+          'env', {
+            modules: false,
+          }
+        ]],
+      },
+    },
+  }
+],
+```
+
+1. **由于`babel-loader`通常属于对所有`JS`后缀文件设置的规则，所以需要在`exclude`中添加`node_modules`，否则会令`babel-loader`编译其中所有的模块，这将严重拖慢打包的速度，并且有可能改变第三方模块的原有行为。**
+2. **对于`babel-loader`本身我们添加了`cacheDirectory`配置项，它会启用缓存机制，在重复打包未改变过的模块时防止二次编译，同样也会加快打包的速度。**`cacheDirectory`可以接收一个字符串类型的路径来作为缓存路径，这个值也可以为`true`，此时其缓存目录会指向`node_modules/.cache/babel-loader`。
+3. **由于`@babel/preset-env`会将`ES6 Module`转化为`CommonJS`的形式，这会导致`Webpack`中的`tree-shaking`特性失效（关于`tree-shaking`会在第8章详细介绍）。将`@babel/preset-env`的`modules`配置项设置为`false`会禁用模块语句的转化，而将`ES6 Module`的语法交给`Webpack`本身处理。**
+
+`babel-loader`支持从`.babelrc`文件读取Babel配置，因此可以将`presets`和`plugins从Webpack`配置文件中提取出来，也能达到相同的效果。
+
+### `ts-loader`
+
+**`ts-loader`与`babel-loader`的性质类似，它是用于连接`Webpack`与`Typescript`的模块。**可使用以下命令进行安装：
+
+```bash
+npm install ts-loader typescript
+```
+
+`Webpack`配置如下：
+
+```JavaScript
+rules: [
+    {
+        test: /\.ts$/,
+        use: 'ts-loader',
+    }
+],
+```
+
+需要注意的是，**Typescript本身的配置并不在`ts-loader`中，而是必须要放在工程目录下的`tsconfig.json`中。**如：
+
+```javascript
+{
+    "compilerOptions": {
+        "target": "es5",
+        "sourceMap": true,
+    },
+},
+```
+
+通过`Typescript`和`ts-loader`，我们可以实现代码类型检查。更多配置请参考[`tsloader`文档](https://github.com/TypeStrong/ts-loader)。
+
+### `file-loader`
+
+**`file-loader`用于打包文件类型的资源，并返回其`publicPath`。**
+安装命令如下：
+
+```bash
+npm install file-loader
+```
+
+`Webpack`配置如下：
+
+```javascript
+const path = require('path');
+module.exports = {
+    entry: './app.js',
+    output: {
+        path: path.join(__dirname, 'dist'),
+        filename: 'bundle.js',
+    },
+    module: {
+        rules: [
+            {
+                test: /\.(png|jpg|gif)$/,
+                use: 'file-loader',
+            }
+        ],
+    },
+}；
+```
+
+上面我们对`png、jpg、gif`这类图片资源使用`file-loader`，然后就可以在`JS`中加载图片了。
+
+```javascript
+import avatarImage from './avatar.jpg';
+console.log(avatarImage); // c6f482ac9a1905e1d7d22caa909371fc.jpg
+```
+
+第3章介绍过，`output.path`是资源的打包输出路径，`output.publicPath`是资源引用路径（具体可以翻阅前文内容）。使用`Webpack`打包完成后，`dist`目录下会生成名为`c6f482ac9a1905e1d7d22caa909371fc.jpg`的图片文件。**由于配置中并没有指定`output.publicPath`，因此这里打印出的图片路径只是文件名，默认为文件的`hash`值加上文件后缀。**
+
+让我们观察下添加了`output.publicPath`之后的情况。请看下面的例子：
+
+```javascript
+const path = require('path');
+module.exports = {
+    entry: './app.js',
+    output: {
+        path: path.join(__dirname, 'dist'),
+        filename: 'bundle.js',
+        publicPath: './assets/',
+    },
+    module: {
+        rules: [
+            {
+                test: /\.(png|jpg|gif)$/,
+                use: 'file-loader',
+            }
+        ],
+    },
+}；
+```
+
+此时图片路径会成为如下形式：
+
+```javascript
+import avatarImage from './avatar.jpg';
+console.log(avatarImage); // ./assets/c6f482ac9a1905e1d7d22caa909371fc.jpg
+```
+
+`file-loader`也支持配置文件名以及`publicPath`（这里的`publicPath`会覆盖原有的`output.publicPath`），通过`loader`的`options`传入。
+
+```javascript
+rules: [
+    {
+        test: /\.(png|jpg|gif)$/,
+        use: {
+            loader: 'file-loader',
+            options: {
+                name: '[name].[ext]',
+                publicPath: './another-path/',
+            },
+        },
+    }
+] ,
+```
+
+上面的配置会使图片路径成为如下形式：
+
+```javascript
+import avatarImage from './avatar.jpg';
+console.log(avatarImage); // ./another-path/avatar.jpg
+```
+
+可以看到，**`file-loader`中`options.publicPath`覆盖了`Webpack`配置的`publicPath`**，因此图片路径为`./another-path/avatar.jpg`。
+
+### `url-loader`
+
+**`url-loader与file-loader`作用类似，唯一的不同在于用户可以设置一个文件大小的阈值，当大于该阈值时与`file-loader`一样返回`publicPath`，而小于该阈值时则返回文件`base64`形式编码。**
+安装命令如下：
+
+```bash
+npm install url-loaderWebpack
+```
+
+配置如下：
+
+```javascript
+rules: [
+    {
+        test: /\.(png|jpg|gif)$/,
+        use: {
+            loader: 'url-loader',
+            options: {
+                limit: 10240,
+                name: '[name].[ext]',
+                publicPath: './assets-path/',
+            },
+        },
+    }
+],
+```
+
+`url-loader可接收与file-loader`相同的参数，如`name`和`publicPath`等，同时也可以接收一个`limit`参数。使用示例如下：
+
+```javascript
+import avatarImage from './avatar.jpg';
+console.log(avatarImage); // data:image/jpeg;base64,/9j/2wCEAAgGBg……
+```
+
+**由于图片小于`limit`，因此经过`url-loader`转化后得到的是`base64`形式的编码。**
+
+### `vue-loader`
+
+**`vue-loader`用于处理`vue`组件**，类似以下形式：
+
+```vue
+// App.vue
+<template>
+    <h1>{{ title }}</h1>
+</template>
+<script>
+export default {
+    name: 'app',
+    data() {
+        return { title: 'Welcome to Your Vue.js App' }
+    }
+}
+</script>
+<style lang="css">
+h1 {
+    color: #09c;
+}
+</style>
+```
+
+`vue-loader`可以将组件的模板、`JS`及样式进行拆分。在安装时，除了必要的`vue与vue-loader`以外，还要安装`vue-template-compiler`来编译`Vue`模板，以及`css-loader`来处理样式（如果使用`SCSS或LESS`则仍需要对应的`loader`）。安装命令如下：
+
+```javascript
+npm install vue-loader vue vue-template-compiler css-loader
+```
+
+`Webpack`配置如下：
+
+```javascript
+rules: [
+    {
+        test: /\.vue$/,
+        use: 'vue-loader',
+    }
+],
+```
+
+`vue-loader`支持更多高级配置，这里不再详述，感兴趣的读者可[参阅文档](https://vue-loader.vuejs.org/zh-cn)。
+
+### `html-loader`
+
+**`html-loader`用于将`HTML`文件转化为字符串并进行格式化，这使得我们可以把一个`HTML`片段通过`JS`加载进来。**
+安装命令如下：
+
+```bash
+npm install html-loader
+```
+
+`Webpack`配置如下：
+
+```javascript
+rules: [
+    {
+        test: /\.html$/,
+        use: 'html-loader',
+    }
+],
+```
+
+使用示例如下：
+
+```javascript
+// header.html
+<header>
+    <h1>This is a Header.</h1>
+</header>
+
+// index.js
+import headerHtml from './header.html';
+document.write(headerHtml);
+```
+
+`header.html`将会转化为字符串，并通过`document.write`插入页面中。
+
+### `handlebars-loader`
+
+`handlebars-loader`用于处理`handlebars`模板，在安装时要额外安装`handlebars`。
+
+安装命令如下：
+
+```bash
+npm install handlebars-loader handlebars
+```
+
+`Webpack`配置如下：
+
+```javascript
+rules: [
+    {
+        test: /\.handlebars$/,
+        use: handlebars-loader',
+    }
+],
+```
+
+使用示例如下：
+
+```javascript
+// content.handlebars
+<div class="entry">
+    <h1>{{ title }}</h1>
+    <div class="body">{{ body }}</div>
+</div>
+
+// index.js
+import contentTemplate from './content.handlebars';
+const div = document.createElement('div');
+div.innerHTML = contentTemplate({
+         title: "Title",
+         body: "Your books are due next Tuesday"
+});
+document.body.appendChild(div);
+```
+
+`handlebars`文件加载后得到的是一个函数，可以接收一个变量对象并返回最终的字符串。
+
+### 自定义`loader`
+
+#### `loader`初始化
+
+有时会遇到现有`loader`无法很好满足需求的情况，这时就需要我们对其进行修改，或者编写新的`loader`。如前面代码所演示的一样，`loader`本身其实非常简单，下面让我们从头实现一个`loader`，并介绍`Webpack`提供了哪些特性和支持。
+
+我们将实现一个`loader`，它会为所有`JS`文件启用严格模式，也就是说它会在文件头部加上如下代码：
+
+```javascript
+'use strict';
+```
+
+在开发一个`loader`时，我们可以借助`npm/yarn`的软链功能进行本地调试（当然之后可以考虑发布到`npm`等）。下面让我们初始化这个`loader`并配置到工程中。
+创建一个`force-strict-loader`目录，然后在该目录下执行`npm`初始化命令。
+
+```bash
+npm init –y
+```
+
+接着创建`index.js`，也就是`loader`的主体。
+
+```javascript
+module.exports = function(content) {
+     var useStrictPrefix = '\'use strict\';\n\n';
+     return useStrictPrefix + content;
+}
+```
+
+现在我们可以在`Webpack`工程中安装并使用这个`loader`了。
+
+```bash
+npm install <path-to-loader>/force-strict-loader
+```
+
+在`Webpack`工程目录下使用相对路径安装，会在项目的`node_modules`中创建一个指向实际`force-strict-loader`目录的软链，也就是说之后我们可以随时修改`loader`源码并且不需要重复安装了。
+
+下面修改`Webpack`配置。
+
+```javascript
+module: {
+    rules: [
+        {
+            test: /\.js$/,
+            use: 'force-strict-loader'
+        }
+    ]
+}
+```
+
+我们将这个`loader`设置为对所有`JS`文件生效。此时对该工程进行打包，应该可以看到`JS`文件的头部都已经加上了启用严格模式的语句。
+
+#### 启用缓存
+
+**当文件输入和其依赖没有发生变化时，应该让`loader`直接使用缓存，而不是重复进行转换的工作。在`Webpack`中可以使用`this.cacheable`进行控制，修改我们的`loader`。**
+
+```javascript
+// force-strict-loader/index.js
+module.exports = function(content) {
+    if (this.cacheable) {
+        this.cacheable();
+    }
+    var useStrictPrefix = '\'use strict\';\n\n';
+    return useStrictPrefix + content;
+}
+```
+
+通过启用缓存可以加快`Webpack`打包速度，并且可保证相同的输入产生相同的输出。
+
+#### 获取`options`
+
+前文讲过，`loader`的配置项通过`use.options`传进来，如：
+
+```javascript
+rules: [
+    {
+        test: /\.js$/,
+        use: {
+            loader: 'force-strict-loader',
+            options: {
+                sourceMap: true,
+            },
+        },
+    }
+],
+```
+
+上面我们为`force-strict-loader`传入了一个配置项`sourceMap`，接下来我们要在`loader`中获取它。首先需要**安装一个依赖库`loader-utils`，它主要用于提供一些帮助函数。**在`force-strict-loader`目录下执行以下命令：
+
+```bash
+npm install loader-utils
+```
+
+接着更改`loader`。
+
+```javascript
+// force-strict-loader/index.js
+var loaderUtils = require("loader-utils");
+module.exports = function(content) {
+    if (this.cacheable) {
+        this.cacheable();
+    }
+    // 获取和打印 options
+    var options = loaderUtils.getOptions(this) || {};
+    console.log('options', options);
+    // 处理 content
+    var useStrictPrefix = '\'use strict\';\n\n';
+    return useStrictPrefix + content;
+}
+```
+
+**通过`loaderUtils.getOptions`可以获取到配置对象**，这里我们只是把它打印了出来。下面我们来看如何实现一个`source-map`功能。
+
+#### `source-map`
+
+`source-map`可以便于实际开发者在浏览器控制台查看源码。如果没有对`source-map`进行处理，最终也就无法生成正确的`map`文件，在浏览器的`dev tool`中可能就会看到错乱的源码。下面是支持了`source-map`特性后的版本：
+
+```javascript
+// force-strict-loader/index.js
+var loaderUtils = require("loader-utils");
+var SourceNode = require("source-map").SourceNode;
+var SourceMapConsumer = require("source-map").SourceMapConsumer;
+module.exports = function(content, sourceMap) {
+    var useStrictPrefix = '\'use strict\';\n\n';
+    if (this.cacheable) {
+        this.cacheable();
+    }
+    // source-map
+    var options = loaderUtils.getOptions(this) || {};
+    if (options.sourceMap && sourceMap) {
+        var currentRequest = loaderUtils.getCurrentRequest(this);
+        var node = SourceNode.fromStringWithSourceMap(
+            content,
+            new SourceMapConsumer(sourceMap)
+        );
+        node.prepend(useStrictPrefix);
+        var result = node.toStringWithSourceMap({ file: currentRequest });
+        var callback = this.async();
+        callback(null, result.code, result.map.toJSON());
+    }
+    // 不支持source-map情况
+    return useStrictPrefix + content;
+}
+```
+
+首先，**在`loader`函数的参数中我们获取到`sourceMap`对象，这是由`Webpack`或者上一个`loader`传递下来的**，只有当它存在时我们的`loader`才能进行继续处理和向下传递。
+
+**之后我们通过`source-map`这个库来对`map`进行操作，包括接收和消费之前的文件内容和`source-map`，对内容节点进行修改，最后产生新的source-map。在函数返回的时候要使用`this.async`获取`callback`函数（主要是为了一次性返回多个值）。`callback`函数的3个参数分别是抛出的错误、处理后的源码，以及`source-map`。**
+以上介绍了自定义`loader`的基本形式，更多`API`可以查阅[`Webpack`官方文档](https://doc.webpack-china.org/api/loaders/)。
+
+## 小结
+
+**`loader`就像`Webpack`的翻译官。`Webpack`本身只能接受`JavaScript`，为了使其能够处理其他类型的资源，必须使用`loader`将资源转译为`Webpack`能够理解的形式。**
+
+在配置`loader`时，实际上定义的是模块规则（`module.rules`），它主要关注两件事：该规则对哪些模块生效（`test、exclude、include配置`），使用哪些`loader`（`use`配置）。`loader`可以是链式的，并且每一个都允许拥有自己的配置项。
+
+**`loader`本质上是一个函数。第一个`loader`的输入是源文件，之后所有`loader`的输入是上一个`loader`的输出，最后一个`loader`则直接输出给`Webpack`。**
+
+# 五、样式处理
+
