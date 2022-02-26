@@ -2758,3 +2758,600 @@ document.write(`<h1 class="${styles.title}">My Webpack app.</h1>`);
 1. 通过`SCSS、Less`等预编译样式语言来提升开发效率，降低代码复杂度。
 2. 通过`PostCSS`包含的很多功能强大的插件，可以让我们使用更新的`CSS`特性，保证更好的浏览器兼容性。
 3. 通过`CSS Modules`可以让`CSS`模块化，避免样式冲突。
+
+# 六、代码分片
+
+**实现高性能应用其中重要的一点就是尽可能地让用户每次只加载必要的资源，优先级不太高的资源则采用延迟加载等技术渐进式地获取，这样可以保证页面的首屏速度。代码分片（`code splitting`）是`Webpack`作为打包工具所特有的一项技术，通过这项技术我们可以把代码按照特定的形式进行拆分，使用户不必一次全部加载，而是按需加载。**
+
+代码分片可以有效降低首屏加载资源的大小，但同时也会带来新的问题，比如我们应该对哪些模块进行分片、分片后的资源如何管理等，这些也是需要关注的。
+
+## 通过入口划分代码
+
+在`Webpack`中每个入口（`entry`）都将生成一个对应的资源文件，通过入口的配置我们可以进行一些简单有效的代码拆分。
+
+**对于`Web`应用来说通常会有一些库和工具是不常变动的，可以把它们放在一个单独的入口中，由该入口产生的资源不会经常更新，因此可以有效地利用客户端缓存，让用户不必在每次请求页面时都重新加载。**如：
+
+```javascript
+// webpack.config.js
+entry: {
+    app: './app.js',
+    lib: ['lib-a', 'lib-b', 'lib-c']
+}
+
+// index.html
+<script src="dist/lib.js"></script>
+<script src="dist/app.js"></script>
+```
+
+这种拆分方法主要**适合于那些将接口绑定在全局对象上的库，因为业务代码中的模块无法直接引用库中的模块，二者属于不同的依赖树。**
+
+对于多页面应用来说，我们也可以利用入口划分的方式拆分代码。**比如，为每一个页面创建一个入口，并放入只涉及该页面的代码，同时再创建一个入口来包含所有公共模块，并使每个页面都进行加载。但是这样仍会带来公共模块与业务模块处于不同依赖树的问题。**另外，很多时候不是所有的页面都需要这些公共模块。比如`A、B`页面需要`lib-a`模块，`C、D`需要`lib-b`模块，通过手工的方式去配置和提取公共模块将会变得十分复杂。好在我们还可以使用`Webpack`专门提供的插件来解决这个问题。
+
+## `CommonsChunkPlugin`
+
+`CommonsChunkPlugin`是`Webpack 4`之前内部自带的插件（`Webpack` 4之后替换为了`SplitChunks`）。它可以**将多个`Chunk`中公共的部分提取出来**。公共模块的提取可以为项目带来几个收益：
+
+* **开发过程中减少了重复模块打包，可以提升开发速度；**
+* **减小整体资源体积；**
+* **合理分片后的代码可以更有效地利用客户端缓存。**
+
+让我们先看一个简单的例子来直观地认识它。假设我们当前的项目中有`foo.js`和`bar.js`两个入口文件，并且都引入了`react`，下面是未使用`CommonsChunkPlugin`的配置：
+
+```javascript
+// webpack.config.js
+module.exports = {
+    entry: {
+        foo: './foo.js',
+        bar: './bar.js',
+    },
+    output: {
+        filename: '[name].js',
+    },
+};
+
+// foo.js
+import React from 'react';
+document.write('foo.js', React.version);
+// bar.js
+import React from 'react';
+document.write('bar.js', React.version);
+```
+
+让我们来打包看下结果，如图6-1所示。
+
+![image-20220226193208816](../image/image-20220226193208816.png)
+
+从资源体积可以看出，`react`被分别打包到了`foo.js`和`bar.js`中。
+
+更改`webpack.config.js`，添加`CommonsChunkPlugin`。
+
+```javascript
+const webpack = require('webpack');
+module.exports = {
+    entry: {
+        foo: './foo.js',
+        bar: './bar.js',
+    },
+    output: {
+        filename: '[name].js',
+    },
+    plugins: [
+        new webpack.optimize.CommonsChunkPlugin({
+            name: 'commons',
+            filename: 'commons.js',
+        })
+    ],
+}；
+```
+
+在配置文件的头部首先引入了`Webpack`，接着使用其内部的`CommonsChunkPlugin`函数创建了一个插件实例，并传入配置对象（过去的版本中也支持按顺序传入多个参数，该形式目前已经被废弃）。这里我们使用了两个配置项。
+
+* `name`：用于指定公共`chunk`的名字。
+* `filename`：提取后的资源文件名。
+
+对更改后的项目打包试试看，结果如图6-2所示。
+
+![image-20220226193409134](../image/image-20220226193409134.png)
+
+**可以看到，产出的资源中多了`commons.js`，而`foo.js`和`bar.js`的体积从之前的`72.1kB`降为不到`1kB`，这就是把`react`及其依赖的模块都提到`commons.js`的结果。最后，记得在页面中添加一个`script`标签来引入`commons.js`，并且注意，该`JS`一定要在其他`JS`之前引入。**
+
+下面我们再来看几个实际的例子，来了解更多`CommonsChunkPlugin`的特性。
+
+### 提取`vendor`
+
+虽然`CommonsChunkPlugin`主要用于提取多入口之间的公共模块，但这不代表对于单入口的应用就无法使用。我们仍然可以用它来提取第三方类库及业务中不常更新的模块，只需要单独为它们创建一个入口即可。请看下面的例子：
+
+```javascript
+// webpack.config.js
+const webpack = require('webpack');
+module.exports = {
+    entry: {
+        app: './app.js',
+        vendor: ['react'],
+    },
+    output: {
+        filename: '[name].js',
+    },
+    plugins: [
+        new webpack.optimize.CommonsChunkPlugin({
+            name: 'vendor',
+            filename: 'vendor.js',
+        })
+    ],
+};
+
+// app.js
+import React from 'react';
+document.write('app.js', React.version);
+```
+
+**为了将`react`从`app.js`提取出来，我们在配置中加入了一个入口`vendor`，并使其只包含`react`，这样就把`react`变为了`app`和`vendor`这两个`chunk`所共有的模块。在插件内部配置中，我们将`name`指定为`vendor`，这样由`CommonsChunkPlugin`所产生的资源将覆盖原有的由`vendor`这个入口所产生的资源。**
+
+打包结果如图6-3所示。
+
+![image-20220226193659954](../image/image-20220226193659954.png)
+
+### 设置提取范围
+
+**通过`CommonsChunkPlugin`中的`chunks`配置项可以规定从哪些入口中提取公共模块**，请看下面的例子：
+
+```javascript
+// webpack.config.js
+const webpack = require('webpack');
+module.exports = {
+    entry: {
+        a: './a.js',
+        b: './b.js',
+        c: './c.js',
+    },
+    output: {
+        filename: '[name].js',
+    },
+    plugins: [
+        new webpack.optimize.CommonsChunkPlugin({
+            name: 'commons',
+            filename: 'commons.js',
+            chunks: ['a', 'b'],
+        })
+    ],
+};
+```
+
+我们在`chunks`中配置了`a`和`b`，这意味着只会从`a.js`和`b.js`中提取公共模块。打包结果如图6-4所示。
+
+![image-20220226193826159](../image/image-20220226193826159.png)
+
+对于一个大型应用来说，拥有几十个页面是很正常的，这也就意味着会有几十个资源入口。这些入口所共享的模块也许会有些差异，在这种情况下，我们可以配置多个`CommonsChunkPlugin`，并为每个插件规定提取的范围，来更有效地进行提取。
+
+### 设置提取规则
+
+**`CommonsChunkPlugin`的默认规则是只要一个模块被两个入口`chunk`所使用就会被提取出来**，比如只要`a`和`b`用了`react`，`react`就会被提取出来。
+
+**然而现实情况是，有些时候我们不希望所有的公共模块都被提取出来，比如项目中一些组件或工具模块，虽然被多次引用，但是可能经常修改，如果将其和`react`这种库放在一起反而不利于客户端缓存。**
+
+此时我们可以通过`CommonsChunkPlugin`的`minChunks`配置项来设置提取的规则。该配置项非常灵活，支持多种输入形式。
+
+#### 数字
+
+**`minChunks`可以接受一个数字，当设置`minChunks`为`n`时，只有该模块被`n`个入口同时引用才会进行提取。另外，这个阈值不会影响通过数组形式入口传入模块的提取。**这个听上去不是很好理解，让我们看以下例子：
+
+```javascript
+// webpack.config.js
+const webpack = require('webpack');
+module.exports = {
+    entry: {
+        foo: './foo.js',
+        bar: './bar.js',
+        vendor: ['react'],
+    },
+    output: {
+        filename: '[name].js',
+    },
+    plugins: [
+        new webpack.optimize.CommonsChunkPlugin({
+            name: 'vendor',
+            filename: 'vendor.js',
+            minChunks: 3,
+        })
+    ],
+};
+```
+
+我们令foo.js和bar.js共同引用一个util.js。
+
+```javascript
+// foo.js
+import React from 'react';
+import './util';
+document.write('foo.js', React.version);
+
+// bar.js
+import React from 'react';
+import './util';
+document.write('bar.js', React.version);
+
+// util.js
+console.log('util');
+```
+
+如果实际打包应该可以发现，由于我们设置`minChunks`为3，`util.js`并不会被提取到`vendor.js`中，然而`react`并不受这个的影响，仍然会出现在`vendor.js`中。这就是所说的数组形式入口的模块会照常提取。
+
+#### `Infinity`
+
+设置为无穷代表提取的阈值无限高，也就是说所有模块都不会被提取。
+
+这个**配置项的意义有两个**。
+
+* 第一个是和上面的情况类似，即我们**只想让`Webpack`提取特定的几个模块，并将这些模块通过数组型入口传入，这样做的好处是提取哪些模块是完全可控的**；
+* 另一个是我们**指定`minChunks`为`Infinity`，为了生成一个没有任何模块而仅仅包含`Webpack`初始化环境的文件，这个文件我们通常称为`manifest`。**在后面长效缓存的部分会再次介绍。
+
+#### 函数
+
+**`minChunks`支持传入一个函数，它可以让我们更细粒度地控制公共模块。`Webpack`打包过程中的每个模块都会经过这个函数的处理，当函数的返回值是`true`时进行提取。**请看下面的例子：
+
+```javascript
+new webpack.optimize.CommonsChunkPlugin({
+    name: 'verndor',
+    filename: 'vendor.js',
+    minChunks: function(module, count) {
+        // module.context 模块目录路径
+        if(module.context && module.context.includes('node_modules')) {
+            return true;
+        }
+
+        // module.resource 包含模块名的完整路径
+        if(module.resource && module.resource.endsWith('util.js')) {
+            return true;
+        }
+
+        // count 为模块被引用的次数
+        if(count > 5) {
+            return true;
+        }
+    },
+}),
+```
+
+借助上面的配置，我们可以分别提取`node_modules`目录下的模块、名称为`util.js`的模块，以及被引用5次（不包含5次）以上的模块。
+
+### `hash`与长效缓存
+
+使用`CommonsChunkPlugin`时，一个绕不开的问题就是`hash`与长效缓存。**当我们使用该插件提取公共模块时，提取后的资源内部不仅仅是模块的代码，往往还包含`Webpack`的运行时（`runtime`）。`Webpack`的运行时指的是初始化环境的代码，如创建模块缓存对象、声明模块加载函数等。**
+
+**在较早期的`Webpack`版本中，运行时内部也包含模块的`id`，并且这个`id`是以数字的方式不断累加的（比如第1个模块id是0，第2个模块id是1）。这会造成一个问题，即模块id的改变会导致运行时内部的代码发生变动，进一步影响`chunk hash`的生成。一般我们会使用`chunk hash`作为资源的版本号优化客户端的缓存，版本号改变会导致用户频繁地更新资源，即便它们的内容并没有发生变化也会更新。**这个问题解决的方案是：**将运行时的代码单独提取出来。**请看下面这个例子：
+
+```javascript
+// webpack.config.js
+const webpack = require('webpack');
+module.exports = {
+    entry: {
+        app: './app.js',
+        vendor: ['react'],
+    },
+    output: {
+        filename: '[name].js',
+    },
+    plugins: [
+        new webpack.optimize.CommonsChunkPlugin({
+            name: 'vendor',
+        }),
+        new webpack.optimize.CommonsChunkPlugin({
+            name: 'manifest',
+        })
+    ],
+};
+```
+
+上面的配置中，**通过添加了一个`name`为`manifest`的`CommonsChunkPlugin`来提取`Webpack`的运行时。**打包结果如图6-5所示。
+
+![image-20220226194929031](../image/image-20220226194929031.png)
+
+**注意：`manifest`的`CommonsChunkPlugin`必须出现在最后，否则`Webpack`将无法正常提取模块。在我们的页面中，`manifest.js`应该最先被引入，用来初始化`Webpack`环境。**如：
+
+```html
+<!-- index.html -->
+<script src="dist/manifest.js"></script>
+<script src="dist/vendor.js"></script>
+<script src="dist/app.js"></script>
+```
+
+**通过这种方式，`app.js`中的变化将只会影响`manifest.js`，而它是一个很小的文件，我们的`vendor.js`内容及`hash`都不会变化，因此可以被用户所缓存。**
+
+### `CommonsChunkPlugin`的不足
+
+在提取公共模块方面，`CommonsChunkPlugin`可以满足很多场景的需求，但是它也有一些欠缺的地方。
+
+1. **一个`CommonsChunkPlugin`只能提取一个`vendor`，假如我们想提取多个`vendor`则需要配置多个插件，这会增加很多重复的配置代码。**
+
+2. **前面我们提到的`manifest`实际上会使浏览器多加载一个资源，这对于页面渲染速度是不友好的。**
+
+3. 由于内部设计上的一些缺陷，`CommonsChunkPlugin`**在提取公共模块的时候会破坏掉原有`Chunk`中模块的依赖关系**，导致难以进行更多的优化。比如**在异步`Chunk`的场景下`CommonsChunkPlugin`并不会按照我们的预期正常工作。**比如下面的例子：
+
+   ```javascript
+   // webpack.config.js
+   const webpack = require('webpack');
+   module.exports = {
+       entry: './foo.js',
+       output: {
+           filename: 'foo.js',
+       },
+       plugins: [
+           new webpack.optimize.CommonsChunkPlugin({
+               name: 'commons',
+               filename: 'commons.js',
+           })
+       ],
+   };
+   
+   // foo.js
+   import React from 'react';
+   import('./bar.js');
+   document.write('foo.js', React.version);
+   
+   // bar.js
+   import React from 'react';
+   document.write('bar.js', React.version);
+   ```
+
+   打包结果如图6-6所示。
+
+   ![image-20220226195451422](../image/image-20220226195451422.png)
+
+   关于异步加载的部分本章后面会讲到，因此这里的细节可以不必过于在意。这个例子只是为了体现`CommonsChunkPlugin`的缺陷。从结果可以看出，**`react`仍然在`foo.js`中，并没有按照我们的预期被提取到`commons.js`里。**
+
+## `optimization.SplitChunks`
+
+**`optimization.SplitChunks`（简称`SplitChunks`）是`Webpack 4`为了改进`CommonsChunk-Plugin`而重新设计和实现的代码分片特性。它不仅比`CommonsChunkPlugin`功能更加强大，还更简单易用。**
+
+比如我们前面异步加载的例子，在**换成`Webpack 4`的`SplitChunks`之后，就可以自动提取出react了。**请看下面的例子：
+
+```javascript
+// webpack.config.js
+module.exports = {
+    entry: './foo.js',
+    output: {
+        filename: 'foo.js',
+        publicPath: '/dist/',
+    },
+    mode: 'development',
+    optimization: {
+        splitChunks: {
+            chunks: 'all',
+        },
+    },
+};
+
+// foo.js
+import React from 'react';
+import('./bar.js');
+document.write('foo.js', React.version);
+
+// bar.js
+import React from 'react';
+console.log('bar.js', React.version);
+```
+
+此处`Webpack 4`的配置与之前相比有两点不同：
+
+* 使用`optimization.splitChunks`替代了`CommonsChunkPlugin`，并**指定了`chunks`的值为`all`，这个配置项的含义是，`SplitChunks`将会对所有的`chunks`生效（默认情况下，`SplitChunks`只对异步`chunks`生效，并且不需要配置）。**
+* `mode`是`Webpack` 4中新增的配置项，可以针对当前是开发环境还是生产环境自动添加对应的一些`Webpack`配置。
+
+打包结果如图6-7所示。
+
+![image-20220226200147522](../image/image-20220226200147522.png)
+
+原本我们打包的结果应该是`foo.js`及`0.foo.js`（异步加载`bar.js`的结果，后面会介绍），但是由于`SplitChunks`的存在，又生成了一个`vendors~main.foo.js`，并且把`react`提取到了里面。接下来我们会详细介绍`SplitChunks`的特性。
+
+### 从命令式到声明式
+
+**在使用`CommonsChunkPlugin`的时候，我们大多数时候是通过配置项将特定入口中的特定模块提取出来，也就是更贴近命令式的方式。而`SplitChunks`的不同之处在于我们只需要设置一些提取条件，如提取的模式、提取模块的体积等，当某些模块达到这些条件后就会自动被提取出来。`SplitChunks`的使用更像是声明式的。**
+
+以下是`SplitChunks`默认情形下的提取条件：
+
+* **提取后的`chunk`可被共享或者来自`node_modules`目录。**这一条很容易理解，被多次引用或处于`node_modules`中的模块更倾向于是通用模块，比较适合被提取出来。
+* **提取后的`Javascript chunk`体积大于`30kB`（压缩和`gzip`之前），`CSS chunk`体积大于`50kB`。**这个也比较容易理解，如果提取后的资源体积太小，那么带来的优化效果也比较一般。
+* **在按需加载过程中，并行请求的资源最大值小于等于5。**按需加载指的是，通过动态插入`script`标签的方式加载脚本。我们一般不希望同时加载过多的资源，因为每一个请求都要花费建立链接和释放链接的成本，因此提取的规则只在并行请求不多的时候生效。
+* **在首次加载时，并行请求的资源数最大值小于等于3。**和上一条类似，只不过在**页面首次加载时往往对性能的要求更高，因此这里的默认阈值也更低。**
+
+通过前面的例子我们可以进一步解释这些条件。在从`foo.js和bar.js`提取`react`前，会对这些条件一一进行验证，只有满足了所有条件之后`react`才会被提取出来。下面我们进行一下比对：
+
+* `react`属于`node_modules`目录下的模块。
+* `react`的体积大于`30kB`。
+* 按需加载时的并行请求数量为1，为`0.foo.js`。
+* 首次加载时的并行请求数量为2，为`foo.js`和`vendors-main.foo.js`。**之所以`vendors-main.foo.js`不算在第3条是因为它需要被添加在`HTML`的`script`标签中，在页面初始化的时候就会进行加载。**
+
+### 默认的异步提取
+
+前面我们对`SplitChunks`添加了一个`chunks：all`的配置，这是为了提取`foo.js`和`bar.js`的公共模块。实际上`SplitChunks`不需要配置也能生效，但仅仅针对异步资源。请看下面的例子：
+
+```javascript
+// webpack.config.js
+module.exports = {
+    entry: './foo.js',
+    output: {
+        filename: 'foo.js',
+        publicPath: '/dist/',
+    },
+    mode: 'development',
+};
+
+// foo.js
+import('./bar.js');
+console.log('foo.js');
+
+// bar.js
+import lodash from 'lodash';
+console.log(lodash.flatten([1, [2, 3]]));
+```
+
+打包结果如图6-8所示。
+
+![image-20220226201004468](../image/image-20220226201004468.png)
+
+**从结果来看，`foo.js`不仅产生了一个`0.foo.js`（原本的`bar.js`），还有一个`1.foo.js`，这里面包含的就是`lodash`的内容。**让我们再与上一节的4个条件进行比对：
+
+* `lodash`属于`node_modules`目录下的模块，因此即便只有一个`bar.js`引用它也符合条件。
+* `lodash`的体积大于`30kB`。
+* 按需加载时的并行请求数量为2，为`0.foo.js`以及`1.foo.js`。
+* 首次加载时的并行请求数量为1，为`foo.js`。**这里没有计算`1.foo.js`的原因是它只是被异步资源所需要，并不影响入口资源的加载，也不需要添加额外的s`cript`标签。**
+
+### 配置
+
+为了更好地了解`SplitChunks`是怎样工作的，我们来看一下它的默认配置。
+
+```javascript
+splitChunks: {
+    chunks: "async",
+    minSize: {
+      javascript: 30000,
+      style: 50000,
+    },
+    maxSize: 0,
+    minChunks: 1,
+    maxAsyncRequests: 5,
+    maxInitialRequests: 3,
+    automaticNameDelimiter: '~',
+    name: true,
+    cacheGroups: {
+        vendors: {
+            test: /[\\/]node_modules[\\/]/,
+            priority: -10,
+        },
+        default: {
+            minChunks: 2,
+            priority: -20,
+            reuseExistingChunk: true,
+        },
+    },
+},
+```
+
+#### 匹配模式
+
+通过`chunks`我们可以配置`SplitChunks`的工作模式。它有3个可选值，分别为`async`（默认）、`initial`和`all`。`async`即只提取异步`chunk`，`initial`则只对入口`chunk`生效（如果配置了`initial`则上面异步的例子将失效），`all`则是两种模式同时开启。
+
+#### 匹配条件
+
+`minSize、minChunks、maxAsyncRequests、maxInitialRequests`都属于匹配条件，前文已经介绍过了，不赘述。
+
+#### 命名
+
+配置项`name`默认为`true`，它意味着`SplitChunks`可以根据`cacheGroups`和作用范围自动为新生成的`chunk`命名，并以`automaticNameDelimiter`分隔。如`vendors~a~b~c.js`意思是`cacheGroups`为`vendors`，并且该`chunk`是由`a、b、c`三个入口`chunk`所产生的。
+
+#### `cacheGroups`
+
+可以理解成分离`chunks`时的规则。默认情况下有两种规则——`vendors和default`。`vendors`用于提取所有`node_modules`中符合条件的模块，`default`则作用于被多次引用的模块。我们可以对这些规则进行增加或者修改，如果想要禁用某种规则，也可以直接将其置为`false`。当一个模块同时符合多个`cacheGroups`时，则根据其中的`priority`配置项确定优先级。
+
+## 资源异步加载
+
+**资源异步加载主要解决的问题是，当模块数量过多、资源体积过大时，可以把一些暂时使用不到的模块延迟加载。这样使页面初次渲染的时候用户下载的资源尽可能小，后续的模块等到恰当的时机再去触发加载。因此一般也把这种方法叫作按需加载。**
+
+### `import()`
+
+在`Webpack`中有两种异步加载的方式——`import`函数及`require.ensure`。`require.ensure`是`Webpack` 1支持的异步加载方式，从`Webpack` 2开始引入了`import`函数，并且官方也更推荐使用它，因此我们这里只介绍`import`函数。
+
+**与正常`ES6`中的`import`语法不同，通过`import`函数加载的模块及其依赖会被异步地进行加载，并返回一个`Promise`对象。**首先让我们看一个正常模块加载的例子。
+
+```javascript
+// foo.js
+import { add } from './bar.js';
+console.log(add(2, 3));
+
+// bar.js
+export function add(a, b) {
+    return a + b;
+}
+```
+
+**假设`bar.js`的资源体积很大，并且我们在页面初次渲染的时候并不需要使用它，就可以对它进行异步加载。**
+
+```javascript
+// foo.js
+import('./bar.js').then(({ add }) => {
+    console.log(add(2, 3));
+});
+
+// bar.js
+export function add(a, b) {
+    return a + b;
+}
+```
+
+这里还需要我们更改一下`Webpack`的配置。
+
+```javascript
+module.exports = {
+    entry: {
+        foo: './foo.js'
+    },
+    output: {
+        publicPath: '/dist/',
+        filename: '[name].js',
+    },
+    mode: 'development',
+    devServer: {
+        publicPath: '/dist/',
+        port: 3000,
+    },
+};
+```
+
+在第3章中资源输出配置的部分我们讲过，**首屏加载的`JS`资源地址是通过页面中的`script`标签来指定的，而间接资源（通过首屏`JS`再进一步加载的`JS`）的位置则要通过`output.publicPath`来指定。上面我们的`import`函数相当于使`bar.js`成为了一个间接资源，我们需要配置`publicPath`来告诉`Webpack`去哪里获取它。**
+
+此时我们使用`Chrome`的`network`面板应该可以**看到一个`0.js`的请求，它就是`bar.js`及其依赖产生的资源。观察面板中的`Initiator`字段，可以发现它是由`foo.js`产生的请求**，如图6-9所示。
+
+![image-20220226201955431](../image/image-20220226201955431.png)
+
+**该技术实现的原理很简单，就是通过`JavaScript`在页面的`head`标签里插入一个`script`标签`/dist/0.js`，打开`Chrome`的Elements面板就可以看到。由于该标签在原本的`HTML`页面中并没有，因此我们称它是动态插入的**，如图6-10所示。
+
+![image-20220226202059837](../image/image-20220226202059837.png)
+
+`import`函数还有一个比较重要的特性。**`ES6 Module`中要求`import`必须出现在代码的顶层作用域，而`Webpack`的`import`函数则可以在任何我们希望的时候调用。**如：
+
+```javascript
+if (condition) {
+    import('./a.js').then(a => {
+        console.log(a);
+    });
+} else {
+    import('./b.js').then(b => {
+        console.log(b);
+    });
+}
+```
+
+**这种异步加载方式可以赋予应用很强的动态特性，它经常被用来在用户切换到某些特定路由时去渲染相应组件，这样分离之后首屏加载的资源就会小很多。**
+
+### 异步`chunk`的配置
+
+**现在我们已经生成了异步资源，但我们会发现产生的资源名称都是数字`id（如0.js）`，没有可读性。还需要通过一些`Webpack`的配置来为其添加有意义的名字，以便于管理。**
+
+还是上面的例子，我们修改一下`foo.js`及`Webpack`的配置。
+
+```javascript
+// webpack.config.js
+module.exports = {
+    entry: {
+        foo: './foo.js',
+    },
+    output: {
+        publicPath: '/dist/',
+        filename: '[name].js',
+        chunkFilename: '[name].js',
+    },
+    mode: 'development',
+};
+
+// foo.js
+import(/* webpackChunkName: "bar" */ './bar.js').then(({ add }) => {
+    console.log(add(2, 3));
+});
+```
+
+可以看到，我们在`Webpack`的配置中添加了`output.chunkFilename`，用来指定异步`chunk`的文件名。其命名规则与`output.filename`基本一致，不过由于异步`chunk`默认没有名字，其默认值是`[id].js`，这也是为什么我们在例子中看到的是`0.js`。如果有更多的异步`chunk`，则会依次产生`1.js、2.js`等。在`foo.js`中，我们通过特有的注释来让`Webpack`获取到异步`chunk`的名字，并配置`output.chunkFilename`为`[name].js`，最终打包结果如图6-11所示。
+
+![image-20220226202831779](../image/image-20220226202831779.png)
+
+## 小结
+
+了解了`Webpack`代码分片的几种方式：**合理地规划入口，使用`Commons-ChunkPlugin或SplitChunks`，以及资源异步加载。借助这些方法我们可以有效地缩小资源体积，同时更好地利用缓存，给用户更友好的体验。**
