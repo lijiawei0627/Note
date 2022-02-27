@@ -3348,10 +3348,1570 @@ import(/* webpackChunkName: "bar" */ './bar.js').then(({ add }) => {
 });
 ```
 
-可以看到，我们在`Webpack`的配置中添加了`output.chunkFilename`，用来指定异步`chunk`的文件名。其命名规则与`output.filename`基本一致，不过由于异步`chunk`默认没有名字，其默认值是`[id].js`，这也是为什么我们在例子中看到的是`0.js`。如果有更多的异步`chunk`，则会依次产生`1.js、2.js`等。在`foo.js`中，我们通过特有的注释来让`Webpack`获取到异步`chunk`的名字，并配置`output.chunkFilename`为`[name].js`，最终打包结果如图6-11所示。
+可以看到，我们在`Webpack`的配置中添加了`output.chunkFilename`，用来指定异步`chunk`的文件名。其命名规则与`output.filename`基本一致，不过由于异步`chunk`默认没有名字，其默认值是`[id].js`，这也是为什么我们在例子中看到的是`0.js`。如果有更多的异步`chunk`，则会依次产生`1.js、2.js`等。在`foo.js`中，我们**通过特有的注释来让`Webpack`获取到异步`chunk`的名字，并配置`output.chunkFilename`为`[name].js`**，最终打包结果如图6-11所示。
 
 ![image-20220226202831779](../image/image-20220226202831779.png)
 
 ## 小结
 
 了解了`Webpack`代码分片的几种方式：**合理地规划入口，使用`Commons-ChunkPlugin或SplitChunks`，以及资源异步加载。借助这些方法我们可以有效地缩小资源体积，同时更好地利用缓存，给用户更友好的体验。**
+
+# 七、生产环境配置
+
+在生产环境中我们关注的是如何让用户**更快地加载资源，涉及如何压缩资源、如何添加环境变量优化打包、如何最大限度地利用缓存等。**
+
+## 环境配置的封装
+
+生产环境的配置与开发环境有所不同，比如要设置`mode`、环境变量，为文件名添加`chunk hash`作为版本号等。如何让`Webpack`可以按照不同环境采用不同的配置呢？一般来说有以下两种方式。
+
+1. **使用相同的配置文件。**比如令`Webpack`不管在什么环境下打包都使用`webpack.config.js`，只是**在构建开始前将当前所属环境作为一个变量传进去，然后在`webpack.config.js`中通过各种判断条件来决定具体使用哪个配置。**比如：
+
+   ```javascript
+   // package.json
+   {
+     ...
+     "scripts": {
+       "dev": "ENV=development webpack-dev-server",
+       "build": "ENV=production webpack"
+     },
+   }
+   
+   // webpack.config.js
+   const ENV = process.env.ENV;
+   const isProd = ENV === 'production';
+   module.exports = {
+     output: {
+       filename: isProd ? 'bundle@[chunkhash].js' : 'bundle.js',
+     },
+     mode: ENV,
+   };
+   ```
+
+   上面的例子中，我们通过`npm`脚本命令中传入了一个`ENV`环境变量，`webpack.config.js`则根据它的值来确定具体采用什么配置。
+
+2. **为不同环境创建各自的配置文件。**比如，我们可以单独创建一个`webpack.production.config.js`，开发环境的则可以叫`webpack.development.config.js`。然后修改`package.json`。
+
+   ```javascript
+   {
+     ...
+     "scripts": {
+       "dev": " webpack-dev-server --config=webpack.development.config.js",
+       "build": " webpack --config=webpack.production.config.js"
+     },
+   }
+   ```
+
+   上面我们**通过`--config`指定打包时使用的配置文件。**但这种方法存在一个问题，即`webpack.development.config.js`和`webpack.production.config.js`肯定会有重复的部分，一改都要改，不利于维护。在这种情况下，可以**将公共的配置提取出来，比如我们单独创建一个`webpack.common.config.js`。**
+
+   ```javascript
+   module.exports = {
+     entry: './src/index.js',
+     // development 和 production共有配置
+   };
+   ```
+
+   然后**让另外两个`JS`分别引用该文件，并添加上自身环境的配置即可。**
+
+   > 也可以使用**`webpack-merge`，它是一个专门用来做`Webpack`配置合并的工具，便于我们对繁杂的配置进行管理。**
+
+## 开启`production`模式
+
+在早期的`Webpack`版本中，开发者有时会抱怨，不同环境所使用的配置项太多，管理起来复杂。以至于**`Webpack 4`中直接加了一个mode配置项，让开发者可以通过它来直接切换打包模式。**如：
+
+```javascript
+// webpack.config.js
+module.exports = {
+    mode: 'production',
+};
+```
+
+这意味着当前**处于生产环境模式，`Webpack`会自动添加许多适用于生产环境的配置项，减少了人为手动的工作。**
+
+`Webpack`这样做其实是希望隐藏许多具体配置的细节，而将其转化为更具有语义性、更简洁的配置提供出来。从`Webpack 4`开始我们已经能看到它的配置文件不应该越写越多，而是应该越写越少。
+
+大部分时候仅仅设置`mode`是不够的，下面我们继续介绍其他与生产环境相关的自定义配置。
+
+## 环境变量
+
+**通常我们需要为生产环境和本地环境添加不同的环境变量，在`Webpack`中可以使用`DefinePlugin`进行设置。**请看下面的例子：
+
+```javascript
+// webpack.config.js
+const webpack = require('webpack');
+module.exports = {
+    entry: './app.js',
+    output: {
+        filename: 'bundle.js',
+    },
+    mode: 'production',
+    plugins: [
+        new webpack.DefinePlugin({
+            ENV: JSON.stringify('production'),
+        })
+    ],
+};
+
+// app.js
+document.write(ENV);
+```
+
+上面的配置通过`DefinePlugin`设置了`ENV`环境变量，最终页面上输出的将会是字符串`production。`
+
+**除了字符串类型的值以外，我们也可以设置其他类型的环境变量。**
+
+```javascript
+new webpack.DefinePlugin({
+    ENV: JSON.stringify('production'),
+    IS_PRODUCTION: true,
+    ENV_ID: 130912098,
+    CONSTANTS: JSON.stringify({
+        TYPES: ['foo', 'bar']
+    })
+})
+```
+
+**注意我们在一些值的外面加上了`JSON.stringify`，这是因为`DefinePlugin`在替换环境变量时对于字符串类型的值进行的是完全替换。假如不添加`JSON.stringify`的话，在替换后就会成为变量名，而非字符串值。因此对于字符串环境变量及包含字符串的对象都要加上`JSON.stringify`才行。**
+
+许多框架与库都**采用`process.env.NODE_ENV`作为一个区别开发环境和生产环境的变量。`process.env`是`Node.js`用于存放当前进程环境变量的对象；而`NODE_ENV`则可以让开发者指定当前的运行时环境，当它的值为`production`时即代表当前为生产环境，库和框架在打包时如果发现了它就可以去掉一些开发环境的代码，如警告信息和日志等。这将有助于提升代码运行速度和减小资源体积。**具体配置如下：
+
+```javascript
+new webpack.DefinePlugin({
+    process.env.NODE_ENV: 'production',
+})
+```
+
+**如果启用了`mode：production`，则`Webapck`已经设置好了`process.env.NODE_ENV`，不需要再人为添加了。**
+
+## `source map`
+
+**`source map`指的是将编译、打包、压缩后的代码映射回源代码的过程。**经过`Webpack`打包压缩后的代码基本上已经不具备可读性，此时若代码抛出了一个错误，要想回溯它的调用栈是非常困难的。而有了`source map`，再加上浏览器调试工具（`dev tools`），要做到这一点就非常容易了。同时它对于线上问题的追查也有一定帮助。
+
+### 原理
+
+在使用`source map`之前，让我们先介绍一下它的工作原理。**`Webpack`对于工程源代码的每一步处理都有可能会改变代码的位置、结构，甚至是所处文件，因此每一步都需要生成对应的`source map`。若我们启用了`devtool`配置项，`source map`就会跟随源代码一步步被传递，直到生成最后的`map`文件。这个文件默认就是打包后的文件名加上`.map`，如`bundle.js.map`。**
+
+**在生成`mapping`文件的同时，`bundle`文件中会追加上一句注释来标识`map`文件的位置。**如：
+
+```javascript
+// bundle.js
+(function() {
+  // bundle 的内容
+})();
+//# 
+```
+
+当我们打开了浏览器的开发者工具时，`map`文件会同时被加载，这时浏览器会使用它来对打包后的`bundle`文件进行解析，分析出源代码的目录结构和内容。
+
+**`map`文件有时会很大，但是不用担心，只要不打开开发者工具，浏览器是不会加载这些文件的，因此对于普通用户来说并没有影响。但是使用`source map`会有一定的安全隐患，即任何人都可以通过`dev tools`看到工程源码。**后面我们会讲到如何解决这个问题。
+
+### `source map`配置
+
+**`JavaScript`的`source map`的配置很简单，只要在`webpack.config.js`中添加`devtool`即可。**
+
+```javascript
+module.exports = {
+    // ...
+    devtool: 'source-map',
+};
+```
+
+对于`CSS、SCSS、Less`来说，则需要添加额外的`source map`配置项。如下面例子所示：
+
+```javascript
+const path = require('path');
+module.exports = {
+    // ...
+    devtool: 'source-map',
+    module: {
+        rules: [
+            {
+                test: /\.scss$/,
+                use: [
+                    'style-loader',
+                    {
+                        loader: 'css-loader',
+                        options: {
+                            sourceMap: true,
+                        },
+                    }, {
+                        loader: 'sass-loader',
+                        options: {
+                            sourceMap: true,
+                        },
+                    }
+                ] ,
+            }
+        ],
+    },
+}；
+```
+
+**开启`source map`之后，打开`Chrome`的开发者工具，在`“Sources”`选项卡下面的`“webpack：//”`目录中可以找到解析后的工程源码**，如图7-1所示。
+
+![image-20220227104716953](../image/image-20220227104716953.png)
+
+**`Webpack`支持多种`source map`的形式。除了配置为`devtool：'source-map'`以外，还可以根据不同的需求选择`cheap-source-map、eval-source-map`等。通常它们都是`source map`的一些简略版本，因为生成完整的`source map`会延长整体构建时间，如果对打包速度需求比较高的话，建议选择一个简化版的`source map`。比如，在开发环境中，`cheap-module-eval-source-map`通常是一个不错的选择，属于打包速度和源码信息还原程度的一个良好折中。**
+
+在生产环境中由于我们会对代码进行压缩，而最常见的压缩插件`UglifyjsWebpack-Plugin`目前只支持完全的`source-map`，因此没有那么多选择，我们只能使用`source-map、hidden-source-map、nosources-source-map`这3者之一。下面介绍一下这3种`source map`在安全性方面的不同。
+
+### 安全
+
+`source map`不仅可以帮助开发者调试源码，当线上有问题产生时也有助于查看调用栈信息，是线上查错十分重要的线索。同时，有了`source map`也就意味着任何人通过浏览器的开发者工具都可以看到工程源码，对于安全性来说也是极大的隐患。那么如何才能在**保持其功能的同时，防止暴露源码给用户**呢？**`Webpack`提供了`hidden-source-map`及`nosources-source-map`两种策略来提升`source map`的安全性。**
+
+#### `hidden-source-map`
+
+**`hidden-source-map`意味着`Webpack`仍然会产出完整的`map`文件，只不过不会在`bundle`文件中添加对于`map`文件的引用。这样一来，当打开浏览器的开发者工具时，我们是看不到`map`文件的，浏览器自然也无法对`bundle`进行解析。如果我们想要追溯源码，则要利用一些第三方服务，将`map`文件上传到那上面。目前最流行的解决方案是`Sentry`。**
+
+##### `Sentry`错误监控
+
+**`Sentry`是一个错误跟踪平台，开发者接入后可以进行错误的收集和聚类，以便于更好地发现和解决线上问题。`Sentry`支持`JavaScript`的`source map`，我们可以通过它所提供的命令行工具或者`Webpack`插件来自动上传map文件。同时我们还要在工程代码中添加Sentry对应的工具包，每当`JavaScript`执行出错时就会上报给`Sentry`。`Sentry`在接收到错误后，就会去找对应的`map`文件进行源码解析，并给出源码中的错误栈。**
+
+#### `nosources-source-map`
+
+另一种配置是`nosources-source-map`，它对于安全性的保护则没那么强，但是使用方式相对简单。**打包部署之后，我们可以在浏览器开发者工具的`Sources`选项卡中看到源码的目录结构，但是文件的具体内容会被隐藏起来。对于错误来说，我们仍然可以在`Console`控制台中查看源代码的错误栈，或者`console`日志的准确行数。它对于追溯错误来说基本足够，并且其安全性相对于可以看到整个源码的`source-map`配置来说要略高一些。**
+
+#### 白名单
+
+在所有这些配置之外还有一种选择，就是我们可以正常打包出`source map`，然后**通过服务器的`nginx`设置（或其他类似工具）将`.map`文件只对固定的白名单（比如公司内网）开放，这样我们仍然能看到源码，而在一般用户的浏览器中就无法获取到它们了。**
+
+## 资源压缩
+
+**在将资源发布到线上环境前，我们通常都会进行代码压缩，或者叫`uglify`，意思是移除多余的空格、换行及执行不到的代码，缩短变量名，在执行结果不变的前提下将代码替换为更短的形式。一般正常的代码在`uglify`之后整体体积都将会显著缩小。同时，`uglify`之后的代码将基本上不可读，在一定程度上提升了代码的安全性。**
+
+### 压缩`JavaScript`
+
+**压缩`JavaScript`大多数时候使用的工具有两个，一个是`UglifyJS`（`Webpack 3`已集成），另一个是`terser`（`Webpack 4`已集成）。后者由于支持`ES6+`代码的压缩，更加面向于未来，因此官方在`Webpack 4`中默认使用了`terser`的插件`terser-webpack-plugin`。**
+
+在`Webpack 3`中的话，开启压缩需调用`webpack.optimize.UglifyJsPlugin`。如下面例子所示：
+
+```javascript
+// Webpack version < 4
+const webpack = require('webpack');
+module.exports = {
+    entry: './app.js',
+    output: {
+        filename: 'bundle.js',
+    },
+    plugins: [new webpack.optimize.UglifyJsPlugin()],
+};
+```
+
+从`Webpack 4`之后，这项配置被移到了`config.optimization.minimize`。下面是`Webpack 4`的示例（如果开启了`mode：production`，则不需要人为设置）：
+
+```javascript
+module.exports = {
+    entry: './app.js',
+    output: {
+        filename: 'bundle.js',
+    },
+    optimization: {
+        minimize: true,
+    },
+};
+```
+
+`terser-webpack-plugin`插件支持自定义配置。表7-1列出了其中一些常用配置。
+
+![image-20220227105900098](../image/image-20220227105900098.png)
+
+下面的例子展示了如何自定义`terser-webpack-plugin`插件配置。
+
+```javascript
+const TerserPlugin = require('terser-webpack-plugin');
+module.exports = {
+    //...
+    optimization: {
+        // 覆盖默认的 minimizer
+        minimizer: [
+            new TerserPlugin({
+                /* your config */
+                test: /\.js(\?.*)?$/i,
+                exclude: /\/excludes/,
+            })
+        ],
+    },
+};
+```
+
+### 压缩`CSS`
+
+**压缩`CSS`文件的前提是使用`extract-text-webpack-plugin`或`mini-css-extract-plugin`将样式提取出来，接着使用`optimize-css-assets-webpack-plugin`来进行压缩，这个插件本质上使用的是压缩器`cssnano`**，当然我们也可以通过其配置进行切换。具体请看下面的例子：
+
+```javascript
+const ExtractTextPlugin = require('extract-text-webpack-plugin');
+const OptimizeCSSAssetsPlugin = require('optimize-css-assets-webpack-plugin');
+module.exports = {
+    // ...
+    module: {
+        rules: [
+            {
+                test: /\.css$/,
+                use: ExtractTextPlugin.extract({
+                    fallback: 'style-loader',
+                    use: 'css-loader',
+                }),
+            }
+        ],
+    },
+    plugins: [new ExtractTextPlugin('style.css')],
+    optimization: {
+        minimizer: [new OptimizeCSSAssetsPlugin({
+            // 生效范围，只压缩匹配到的资源
+            assetNameRegExp: /\.optimize\.css$/g,
+            // 压缩处理器，默认为 cssnano
+            cssProcessor: require('cssnano'),
+            // 压缩处理器的配置
+            cssProcessorOptions: { discardComments: { removeAll: true } },
+            // 是否展示 log
+            canPrint: true,
+        })],
+    },
+};
+```
+
+## 缓存
+
+**缓存是指重复利用浏览器已经获取过的资源。合理地使用缓存是提升客户端性能的一个关键因素。具体的缓存策略（如指定缓存时间等）由服务器来决定，浏览器会在资源过期前一直使用本地缓存进行响应。**
+
+这同时也带来一个问题，假如开发者想要对代码进行了一个`bug fix`，并希望立即更新到所有用户的浏览器上，而不要让他们使用旧的缓存资源应该怎么做？此时最好的办法是更改资源的`URL`，这样可迫使所有客户端都去下载最新的资源。
+
+### 资源`hash`
+
+**一个常用的方法是在每次打包的过程中对资源的内容计算一次`hash`，并作为版本号存放在文件名中**，如`bundle@2e0a691e769edb228e2.js`。`bundle`是文件本身的名字，`@`后面跟的则是文件内容`hash`值，每当代码发生变化时相应的`hash`也会变化。
+
+我们通常使用`chunkhash`来作为文件版本号，因为它会为每一个`chunk`单独计算一个`hash`。请看下面的例子：
+
+```javascript
+module.exports = {
+    entry: './app.js',
+    output: {
+        filename: 'bundle@[chunkhash].js',
+    },
+    mode: 'production',
+};
+```
+
+打包结果如图7-2所示。
+
+![image-20220227110347030](../image/image-20220227110347030.png)
+
+### `html-webpack-plugin`：输出动态`HTML`
+
+接下来我们面临的问题是，**资源名的改变也就意味着`HTML`中的引用路径的改变。每次更改后都要手动地去维护它是很困难的，理想的情况是在打包结束后自动把最新的资源名同步过去。使用`html-webpack-plugin`可以帮我们做到这一点。**请看下面的例子：
+
+```javascript
+const HtmlWebpackPlugin = require('html-webpack-plugin');
+module.exports = {
+    // ...
+    plugins: [
+        new HtmlWebpackPlugin()
+    ],
+};
+```
+
+打包结果中多出了一个`index.html`，如图7-3所示。
+
+![image-20220227110709974](../image/image-20220227110709974.png)
+
+我们来看一下`index.html`的内容：
+
+```javascript
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Webpack App</title>
+  </head>
+  <body>
+  <script type="text/javascript"
+  src="bundle@2e0a691e769edbd228e2.js"></script>
+</body>
+</html>
+```
+
+**`html-webpack-plugin`会自动地将我们打包出来的资源名放入生成的`index.html`中，这样我们就不必手动地更新资源`URL`了。**
+
+现在我们看到的是`html-webpack-plugin`凭空创建了一个`index.html`，但现实情况中我们一般需要在`HTML`中放入很多个性化的内容，这时我们可以传入一个已有的`HTML`模板。请看下面的例子：
+
+```javascript
+<!DOCTYPE html>
+<!-- template.html -->
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <title>Custom Title</title>
+    </head>
+    <body>
+        <div id="app">app</div>
+        <p>text content</p>
+    </body>
+</html>
+
+// webpack.config.js
+new HtmlWebpackPlugin({
+    template: './template.html',
+})
+```
+
+通过以上配置我们打包出来的`index.html`结果如下：
+
+```javascript
+<!DOCTYPE html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <title>Custom Title</title>
+    </head>
+    <body>
+        <div id="app">app</div>
+        <p>text content</p>
+        <script type="text/javascript"
+        src="bundle@2e0a691e769edbd228e2.js"></script>
+    </body>
+</html>
+```
+
+`html-webpack-plugin`还支持更多的个性化配置，具体请参阅其[官方文档](https://github.com/jantimon/html-webpack-plugin)。
+
+### 使`chunk id`更稳定
+
+**理想状态下，对于缓存的应用是尽量让用户在启动时只更新代码变化的部分，而对没有变化的部分使用缓存。**
+
+我们之前介绍过使用`CommonsChunkPlugin`和`SplitChunksPlugin`来划分代码。通过它们来尽可能地将一些不常变动的代码单独提取出来，与经常迭代的业务代码区别开，这些资源就可以在客户端一直使用缓存。
+
+然而，如果你**使用的是`Webpack 3`或者以下的版本**，在使用`CommonsChunkPlugin`时要注意`vendor chunk hash`变动的问题，它有可能影响缓存的正常使用。
+
+请看下面的例子：
+
+```javascript
+// app.js
+import React from 'react';
+document.write('app.js');
+
+// webpack.config.js
+const webpack = require('webpack');
+module.exports = {
+    entry: {
+        app: './app.js',
+        vendor: ['react'],
+    },
+    output: {
+        filename: '[name]@[chunkhash].js',
+    },
+    plugins: [
+        new webpack.optimize.CommonsChunkPlugin({
+            name: 'vendor',
+        })
+    ],
+};
+```
+
+此时我们的打包结果如图7-4所示。
+
+![image-20220227111210358](../image/image-20220227111210358.png)
+
+接下来我们创建一个`util.js`，并在`app.js`里面引用它。
+
+```javascript
+// util.js
+console.log('util.js');
+
+// app.js
+import React from 'react';
+import './util';
+document.write('app.js');
+```
+
+此时如果我们进行打包，预期的结果应该是`app.js`的`chunk hash`发生变化，而`vendor.js`的则保持不变。然而打包结果如图7-5所示。
+
+![image-20220227111427681](../image/image-20220227111427681.png)
+
+上面的**结果中`vendor.js`的`chunk hash`也发生了变化，这将会导致客户端重新下载整个资源文件。产生这种现象的原因在于`Webpack`为每个模块指定的id是按数字递增的，当有新的模块插入进来时就会导致其他模块的id也发生变化，进而影响了`vendor chunk`中的内容。**
+
+解决的方法在于更改模块id的生成方式。在`Webpack 3`内部自带了`HashedModuleIds-Plugin`，它可以为每个模块按照其所在路径生成一个字符串类型的`hash id`。稍稍更改一下之前的配置就可以解决。
+
+```javascript
+plugins: [
+    new webpack.HashedModuleIdsPlugin(),
+    new webpack.optimize.CommonsChunkPlugin({
+        name: 'vendor',
+    })
+]
+```
+
+对于`Webpack 3`以下的版本，由于其不支持字符串类型的模块`id`，可以使用另一个由社区提供的兼容性插件`webpack-hashed-module-id-plugin`，可以起到一样的效果。**从`Webpack 4`以后已经修改了模块`id`的生成机制，也就不再有该问题了。**
+
+## `bundle`体积监控和分析
+
+**为了保证良好的用户体验，我们可以对打包输出的`bundle`体积进行持续的监控，以防止不必要的冗余模块被添加进来。**
+
+`VS Code`中有一个插件`Import Cost`可以帮助我们对引入模块的大小进行实时监测。每当我们在代码中引入一个新的模块（主要是`node_modules`中的模块）时，它都会为我们计算该模块压缩后及`gzip`过后将占多大体积，如图7-6所示。
+
+![image-20220227111737035](../image/image-20220227111737035.png)
+
+当我们发现某些包过大时就可以采取一些措施，比如寻找一些更小的替代方案或者只引用其中的某些子模块，如图7-7所示。
+
+![image-20220227111816290](../image/image-20220227111816290.png)
+
+### `webpack-bundle-analyzer`
+
+另外一个**很有用的工具是`webpack-bundle-analyzer`，它能够帮助我们分析一个`bundle`的构成。使用方法也很简单，只要将其添加进`plugins`配置即可。**
+
+```javascript
+const Analyzer = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
+module.exports = {
+    // ...
+    plugins: [
+        new Analyzer()
+    ],
+};
+```
+
+它可以帮我们生成一张`bundle`的模块组成结构图，每个模块所占的体积一目了然，如图7-8所示。
+
+![image-20220227111918128](../image/image-20220227111918128.png)
+
+最后我们还需要自动化地对资源体积进行监控，`bundlesize`这个工具包可以帮助做到这一点。安装之后只需要在`package.json`进行一下配置即可。
+
+```javascript
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "bundlesize": [
+    {
+      "path": "./bundle.js",
+      "maxSize": "50 kB"
+    }
+  ],
+  "scripts": {
+    "test:size": "bundlesize"
+  }
+}
+```
+
+通过`npm`脚本可以执行`bundlesize`命令，它会根据我们配置的资源路径和最大体积验证最终的`bundle`是否超限。我们也可以将其作为自动化测试的一部分，来保证输出的资源如果超限了不会在不知情的情况下就被发布出去。
+
+## 小结
+
+**开发环境中我们可能关注的是打包速度，而在生产环境中我们关注的则是输出的资源体积以及如何优化客户端缓存来缩短页面渲染时间。**
+
+介绍了设置生产环境变量、压缩代码、监控资源体积等方法。**缓存的控制主要依赖于从chunk内容生成hash作为版本号，并添加到资源文件名中，使资源更新后可以立即被客户端获取到。source map对于追溯线上问题十分重要，但也存在安全性隐患。通过一些特殊的source map配置以及第三方服务，我们可以兼顾两者。**
+
+`Webpack 4`提供了`“mode：'production'”`配置项，通过它可以节省很多生产环境下的特定代码，让配置文件更加简洁。
+
+# 八、打包优化
+
+主要介绍一些**优化`Webpack`配置的方法，目的是让打包的速度更快，输出的资源更小。**首先重述一条软件工程领域的经验——不要过早优化，在项目的初期不要看到任何优化点就拿来加到项目中，这样不但增加了复杂度，优化的效果也不会太理想。一般是当项目发展到一定规模后，性能问题随之而来，这时再去分析然后对症下药，才有可能达到理想的优化效果。
+
+## `HappyPack`
+
+**`HappyPack`是一个通过多线程来提升`Webpack`打包速度的工具。**我们可以猜测`HappyPack`这个名字的由来，也许是它的作者在使用`Webpack`过程中无法忍受其漫长的打包过程，于是自己写了一个插件让速度快了很多，摆脱了构建的痛苦。对于很多大中型工程而言，`HappyPack`确实可以显著地缩短打包时间。
+
+### 工作原理
+
+在打包过程中有一项非常耗时的工作，就是使用`loader`将各种资源进行转译处理。最常见的包括使用`babel-loader`转译`ES6+`语法和`ts-loader`转译`TypeScript`。我们可以简单地将代码转译的工作流程概括如下：
+
+1. 从配置中获取打包入口；
+2. 匹配`loader`规则，并对入口模块进行转译；
+3. 对转译后的模块进行依赖查找（如`a.js`中加载了`b.js和c.js`）；
+4. 对新找到的模块重复进行步骤2）和步骤3），直到没有新的依赖模块。
+
+不难看出从步骤2）到步骤4）是一个递归的过程，`Webpack`需要一步步地获取更深层级的资源，然后逐个进行转译。这里的问题在于`Webpack`是单线程的，假设一个模块依赖于几个其他模块，`Webpack`必须对这些模块逐个进行转译。**虽然这些转译任务彼此之间没有任何依赖关系，却必须串行地执行。`HappyPack`恰恰以此为切入点，它的核心特性是可以开启多个线程，并行地对不同模块进行转译，这样就可以充分利用本地的计算资源来提升打包速度。**
+
+**`HappyPack`适用于那些转译任务比较重的工程**，当我们把类似`babel-loader和ts-loader`迁移到`HappyPack`之上后，一般都可以收到不错的效果，而对于其他的如`sass-loader、less-loader`本身消耗时间并不太多的工程则效果一般。
+
+### 单个`loader`的优化
+
+**在实际使用时，要用`HappyPack`提供的`loader`来替换原有`loader`，并将原有的那个通过`HappyPack`插件传进去。**请看下面的例子：
+
+```javascript
+// 初始Webpack配置（使用HappyPack前）
+module.exports = {
+  //...
+  module: {
+    rules: [
+      {
+        test: /\.js$/,
+        exclude: /node_modules/,
+        loader: 'babel-loader',
+        options: {
+          presets: ['react'],
+        },
+      }
+    ],
+  },
+};
+
+// 使用HappyPack的配置
+const HappyPack = require('happypack');
+module.exports = {
+  //...
+  module: {
+    rules: [
+      {
+        test: /\.js$/,
+        exclude: /node_modules/,
+        loader: 'happypack/loader',
+      }
+    ],
+  },
+  plugins: [
+    new HappyPack({
+      loaders: [
+        {
+          loader: 'babel-loader',
+          options: {
+            presets: ['react'],
+          },
+        }
+      ],
+    })
+  ],
+};
+```
+
+**在`module.rules`中，我们使用`happypack/loader`替换了原有的`babel-loader`，并在`plugins`中添加了`HappyPack`的插件，将原有的`babel-loader`连同它的配置插入进去即可。**
+
+### 多个`loader`的优化
+
+**在使用`HappyPack`优化多个`loader`时，需要为每一个`loader`配置一个`id`，否则`HappyPack`无法知道`rules`与`plugins`如何一一对应。**请看下面的例子，这里同时对`babel-loader`和`ts-loader`进行了`Happypack`的替换。
+
+```javascript
+const HappyPack = require('happypack');
+module.exports = {
+  //...
+  module: {
+    rules: [
+      {
+        test: /\.js$/,
+        exclude: /node_modules/,
+        loader: 'happypack/loader?id=js',
+      },
+      {
+        test: /\.ts$/,
+        exclude: /node_modules/,
+        loader: 'happypack/loader?id=ts',
+      }
+    ],
+  },
+  plugins: [
+    new HappyPack({
+      id: 'js',
+      loaders: [{
+        loader: 'babel-loader',
+        options: {}, // babel options
+      }],
+    }),
+    new HappyPack({
+      id: 'ts',
+      loaders: [{
+        loader: 'ts-loader',
+        options: {}, // ts options
+      }],
+    })
+  ]
+};
+```
+
+在使用多个`HappyPack loader`的同时也就意味着要插入多个`HappyPack`的插件，每个插件加上`id`来作为标识。同时我们也可以为每个插件设置具体不同的配置项，如使用的线程数、是否开启`debug`模式等。
+
+## 缩小打包作用域
+
+**从宏观角度来看，提升性能的方法无非两种：增加资源或者缩小范围。增加资源就是指使用更多CPU和内存，用更多的计算能力来缩短执行任务的时间；缩小范围则是针对任务本身，比如去掉冗余的流程，尽量不做重复性的工作等。**前面我们说的`HappyPack`属于增加资源，那么接下来我们再谈谈如何缩小范围。
+
+### `exclude`和`include`
+
+在第4章我们介绍过`exclude和include`，在配置`loader`的时候一般都会加上它们。对于`JS`来说，一般要把`node_modules`目录排除掉，另外当`exclude和include`规则有重叠的部分时，`exclude`的优先级更高。下面的例子使用`include使babel-loader`只生效于源码目录。
+
+```javascript
+module: {
+  rules: [
+    {
+      test: /\.js$/,
+      include: /src\/scripts/,
+      loader: 'babel-loader,
+    }
+  ],
+},
+```
+
+### `noParse`
+
+**有些库我们是希望`Webpack`完全不要去进行解析的，即不希望应用任何`loader`规则，库的内部也不会有对其他模块的依赖，那么这时可以使用`noParse`对其进行忽略。**请看下面的例子：
+
+```javascript
+module.exports = {
+  //...
+  module: {
+    noParse: /lodash/,
+  }
+};
+```
+
+上面的配置将会忽略所有文件名中包含`lodash`的模块，**这些模块仍然会被打包进资源文件，只不过`Webpack`不会对其进行任何解析。**
+在`Webpack 3`及之后的版本还支持完整的路径匹配。如：
+
+```javascript
+module.exports = {
+  //...
+  module: {
+    noParse: function(fullPath) {
+      // fullPath是绝对路径，如： /Users/me/app/webpack-no-parse/lib/lodash.js
+      return /lib/.test(fullPath);
+    },
+  }
+};
+```
+
+上面的配置将会忽略所有`lib`目录下的资源解析。
+
+### `IgnorePlugin`
+
+`exclude和include`是确定`loader`的规则范围，`noParse`是不去解析但仍会打包到`bundle`中。最后让我们再看一个插件`IgnorePlugin`，它**可以完全排除一些模块，被排除的模块即便被引用了也不会被打包进资源文件中。**
+
+这对于排除一些库相关文件非常有用。一些由库产生的额外资源我们用不到但又无法去掉，因为引用的语句处于库文件的内部。**比如，`Moment.js`是一个日期时间处理相关的库，为了做本地化它会加载很多语言包，对于我们来说一般用不到其他地区的语言包，但它们会占很多体积，这时就可以用`IgnorePlugin`来去掉。**
+
+```javascript
+plugins: [
+  new webpack.IgnorePlugin({
+    resourceRegExp: /^\.\/locale$/, // 匹配资源文件
+    contextRegExp: /moment$/, // 匹配检索目录
+  })
+],
+```
+
+### `Cache`
+
+**有些`loader`会有一个`cache`配置项，用来在编译代码后同时保存一份缓存，在执行下一次编译前会先检查源码文件是否有变化，如果没有就直接采用缓存，也就是上次编译的结果。这样相当于实际编译的只有变化了的文件，整体速度上会有一定提升。**
+
+在`Webpack 5`中添加了一个新的配置项`“cache：{type："filesystem"}”`，它会在全局启用一个文件缓存。要注意的是，该特性目前仅仅是实验阶段，并且无法自动检测到缓存已经过期。比如我们更新了`babel-loader`及一些相关配置，但是由于`JS`源码没有发生变化，重新打包后还会是上一次的结果。
+
+目前的解决办法就是，当我们更新了任何`node_modules`中的模块或者`Webpack`的配置后，手动修改`cache.version`来让缓存过期。同时官方也给出了声明说，未来会优化这一块，尽量可以自动检测缓存是否过期。
+
+## 动态链接库与`DllPlugin`
+
+动态链接库是早期`Windows`系统由于受限于当时计算机内存空间较小的问题而出现的一种内存优化方法。**当一段相同的子程序被多个程序调用时，为了减少内存消耗，可以将这段子程序存储为一个可执行文件，当被多个程序调用时只在内存中生成和使用同一个实例。**
+
+**`DllPlugin`借鉴了动态链接库的这种思路，对于第三方模块或者一些不常变化的模块，可以将它们预先编译和打包，然后在项目实际构建过程中直接取用即可。**当然，通过`DllPlugin`实际生成的还是`JS`文件而不是动态链接库，取这个名字只是由于方法类似罢了。**在打包`vendor`的时候还会附加生成一份`vendor`的模块清单，这份清单将会在工程业务模块打包时起到链接和索引的作用。**
+
+`DllPlugin`和`Code Splitting`有点类似，都可以用来提取公共模块，但本质上有一些区别。**`Code Splitting`的思路是设置一些特定的规则并在打包的过程中根据这些规则提取模块；`DllPlugin`则是将`vendor`完全拆出来，有自己的一整套`Webpack`配置并独立打包，在实际工程构建时就不用再对它进行任何处理，直接取用即可。**因此，理论上来说，`DllPlugin`会比`Code Splitting`在打包速度上更胜一筹，但也相应地增加了配置，以及资源管理的复杂度。下面我们一步步来进行`DllPlugin`的配置。
+
+### `vendor`配置
+
+首先需要为动态链接库单独创建一个`Webpack`配置文件，比如命名为`webpack.vendor.config.js`，用来区别工程本身的配置文件`webpack.config.js`。
+
+请看下面的例子：
+
+```JavaScript
+// webpack.vendor.config.js
+const path = require('path');
+const webpack = require('webpack');
+const dllAssetPath = path.join(__dirname, 'dll');
+const dllLibraryName = 'dllExample';
+module.exports = {
+  entry: ['react'],
+  output: {
+    path: dllAssetPath,
+    filename: 'vendor.js',
+    library: dllLibraryName,
+  },
+  plugins: [
+    new webpack.DllPlugin({
+      name: dllLibraryName,
+      path: path.join(dllAssetPath, 'manifest.json'),
+    })
+  ],
+};
+```
+
+**配置中的`entry`指定了把哪些模块打包为`vendor`。**`plugins`的部分我们引入了`Dll-Plugin`，并添加了以下配置项。
+
+* **`name`：导出的`dll library`的名字，它需要与`output.library`的值对应。**
+* **`path`：资源清单的绝对路径，业务代码打包时将会使用这个清单进行模块索引。**
+
+### `vendor`打包
+
+接下来我们就要打包`vendor`并生成资源清单了。为了后续运行方便，可以在`package.json`中配置一条`npm script`，如下所示：
+
+```javascript
+// package.json
+{
+  ...
+  "scripts": {
+    "dll": "webpack --config webpack.vendor.config.js"
+  },
+}
+```
+
+运行`npm run dll`后会生成一个`dll`目录，里面有**两个文件`vendor.js`和`manifest.json`，前者包含了库的代码，后者则是资源清单。**
+
+可以预览一下生成的`vendor.js`，它以一个立即执行函数表达式的声明开始。
+
+```javascript
+var dllExample = (function(params) {
+   // ...
+})(params);
+```
+
+上面的`dllExample`正是我们在`webpack.vendor.config.js`中指定的`dllLibraryName`。
+接着打开`manifest.json`，其大体内容如下：
+
+```javascript
+{
+  "name": "dllExample",
+  "content": {
+    "./node_modules/fbjs/lib/invariant.js": {
+      "id": 0,
+      "buildMeta": { "providedExports": true }
+    },
+    ...
+  }
+}
+```
+
+`manifest.json`中有一个`name`字段，这是我们通过`DllPlugin`中的`name`配置项指定的。
+
+### 链接到业务代码
+
+**将`vendor`链接到项目中很简单，这里我们将使用与`DllPlugin`配套的插件`DllReferencePlugin`，它起到一个索引和链接的作用。在工程的`webpack`配置文件（`webpack.config.js`）中，通过`DllReferencePlugin`来获取刚刚打包好的资源清单，然后在页面中添加`vendor.js`的引用就可以了。**请看下面的示例：
+
+```javascript
+// webpack.config.js
+const path = require('path');
+const webpack = require('webpack');
+module.exports = {
+  // ...
+  plugins: [
+    new webpack.DllReferencePlugin({
+      manifest: require(path.join(__dirname, 'dll/manifest.json')),
+    })
+  ]
+};
+
+// index.html
+<body>
+  <!-- ... -->
+
+  <script src="dll/vendor.js"></script>
+  <script src="dist/app.js"></script>
+
+</body>
+```
+
+**当页面执行到`vendor.js`时，会声明`dllExample`全局变量。而`manifest`相当于我们注入`app.js`的资源地图，`app.js`会先通过`name`字段找到名为`dllExample`的`library`，再进一步获取其内部模块。**这就是我们在`webpack.vendor.config.js`中给`DllPlugin`的`name`和`output.library`赋相同值的原因。如果页面报“变量`dllExample`不存在”的错误，那么有可能就是没有指定正确的`output.library`，或者忘记了在业务代码前加载`vendor.js`。
+
+### 潜在问题
+
+**目前我们的配置还存在一个潜在的问题。当我们打开`manifest.json`后，可以发现每个模块都有一个`id`，其值是按照数字顺序递增的。业务代码在引用`vendor`中模块的时候也是引用的这个数字`id`。当我们更改`vendor`时这个数字`id`也会随之发生变化。**
+
+假设我们的工程中目前有以下资源文件，并为每个资源都加上了`chunk hash`。
+
+* `vendor@[hash].js`（通过`DllPlugin`构建）
+* `page1@[hash].js`
+* ``page2@[hash].js`
+* `util@[hash].js`
+
+现在`vendor`中有一些模块，不妨假定其中包含了`react`，其`id`是5。当尝试添加更多的模块到`vendor`中（比如`util.js`使用了`moment.js`，我们希望`moment.js`也通过`DllPlugin`打包）时，那么重新进行`Dll`构建时`moment.js`有可能会出现在`react`之前，此时`react`的`id`就变为了6。`page1.js和page2.js`是通过`id`进行引用的，因此它们的文件内容也相应发生了改变。此时我们可能会面临以下两种情况：
+
+* `page1.js和page2.js`的`chunk hash`均发生了改变。这是我们不希望看到的，因为它们内容本身并没有改变，而现在`vendor`的变化却使得用户必须重新下载所有资源。
+* `page1.js和page.js`的`chunk hash`没有改变。这种情况大多发生在较老版本的`Webpack`中，并且比第1种情况更为糟糕。因为`vendor`中的模块`id`改变了，而用户却由于没有更新缓存而继续使用过去版本的`page1.js和page2.js`，也就引用不到新的`vendor`模块而导致页面错误。对于开发者来说，这个问题很难排查，因为在开发环境下一切都是正常的，只有在生产环境会看到页面崩溃。
+
+这个问题的根源在于，当我们对`vendor`进行操作时，本来`vendor`中不应该受到影响的模块却改变了它们的`id`。解决这个问题的方法很简单，在打包`vendor`时添加上`HashedModuleIdsPlugin`。请看下面的例子：
+
+```javascript
+// webpack.vendor.config.js
+module.exports = {
+  // ...
+  plugins: [
+    new webpack.DllPlugin({
+      name: dllLibraryName,
+      path: path.join(dllAssetPath, 'manifest.json'),
+    }),
+    new webpack.HashedModuleIdsPlugin(),
+  ]
+};
+```
+
+这个插件是在`Webpack 3`中被引入进来的，主要就是为了解决数字`id`的问题。从`Webpack 3`开始，**模块`id`不仅可以是数字，也可以是字符串。`HashedModuleIdsPlugin`可以把`id`的生成算法改为根据模块的引用路径生成一个字符串`hash`。比如一个模块的`id`是`2NuI`（`hash`值），因为它的引用路径不会因为操作`vendor`中的其他模块而改变，`id`将会是统一的，这样就解决了我们前面提到的问题。**
+
+## `tree shaking`
+
+在第2章我们介绍过，**`ES6 Module`依赖关系的构建是在代码编译时而非运行时。基于这项特性`Webpack`提供了`tree shaking`功能，它可以在打包过程中帮助我们检测工程中没有被引用过的模块，这部分代码将永远无法被执行到，因此也被称为“死代码”。`Webpack`会对这部分代码进行标记，并在资源压缩时将它们从最终的`bundle`中去掉。**下面的例子简单展示了`tree shaking`是如何工作的。
+
+```javascript
+// index.js
+import { foo } from './util';
+foo();
+
+// util.js
+export function foo() {
+    console.log('foo');
+}
+export function bar() { // 没有被任何其他模块引用，属于“死代码”
+    console.log('bar');
+}
+```
+
+**在`Webpack`打包时会对`bar()`添加一个标记，在正常开发模式下它仍然存在，只是在生产环境的压缩那一步会被移除掉。**tree shaking有时可以使`bundle`体积显著减小，而实现`tree shaking`则需要一些前提条件。
+
+### `ES6 Module`
+
+**`tree shaking`只能对`ES6 Module`生效。**有时我们会发现虽然只引用了某个库中的一个接口，却把整个库加载进来了，而`bundle`的体积并没有因为`tree shaking`而减小。这可能是由于该库是使用`CommonJS`的形式导出的，为了获得更好的兼容性，目前大部分的`npm`包还在使用`CommonJS`的形式。也有一些`npm`包同时提供了`ES6 Module和CommonJS`两种形式导出，我们应该尽可能使用`ES6 Module`形式的模块，这样`tree shaking`的效率更高。
+
+### 使用`Webpack`进行依赖关系构建
+
+**如果我们在工程中使用了`babel-loader`，那么一定要通过配置来禁用它的模块依赖解析。因为如果由`babel-loader`来做依赖解析，`Webpack`接收到的就都是转化过的`CommonJS`形式的模块，无法进行`tree-shaking`。**禁用`babel-loader`模块依赖解析的配置示例如下：
+
+```javascript
+module.exports = {
+  // ...
+  module: {
+    rules: [{
+      test: /\.js$/,
+      exclude: /node_modules/,
+      use: [{
+        loader: 'babel-loader',
+        options: {
+          presets: [
+            // 这里一定要加上 modules: false
+            [@babel/preset-env, { modules: false }]
+          ],
+        },
+      }],
+    }],
+  },
+};
+```
+
+### 使用压缩工具去除死代码
+
+**`tree shaking`本身只是为死代码添加上标记，真正去除死代码是通过压缩工具来进行的。**使用我们前面介绍过的`terser-webpack-plugin`即可。在`Webpack 4`之后的版本中，将`mode`设置为`production`也可以达到相同的效果。具体配置不赘述，可以参照前面一章的内容。
+
+## 小结
+
+介绍了加快打包速度，减小资源体积的一些方法。对于一些对性能要求高的项目来说这些方法可以起到一定的效果。最后需要强调的是，**每一种优化策略都有其使用场景，并不是任何一个点放在一切项目中都有效。当我们发现性能的问题时，还是要根据现有情况分析出瓶颈在哪里，然后对症下药。**
+
+# 九、开发环境调优
+
+## `Webpack`开发效率插件
+
+`Webpack`拥有非常强大的生态系统，社区中相关的工具也是数不胜数。这里我们介绍几个使用较广的插件，可以从不同的方面对`Webpack`的能力进行增强。
+
+### `webpack-dashboard`
+
+**`Webpack`每一次构建结束后都会在控制台输出一些打包相关的信息，但是这些信息是以列表的形式展示的，有时会显得不够直观。`webpack-dashboard`就是用来更好地展示这些信息的。**
+
+安装命令如下：
+
+```bash
+npm install webpack-dashboard
+```
+
+我们需要把`webpack-dashboard`作为插件添加到`webpack`配置中，如下所示：
+
+```javascript
+const DashboardPlugin = require('webpack-dashboard/plugin');
+module.exports = {
+  entry: './app.js',
+  output: {
+    filename: '[name].js',
+  },
+  mode: 'development',
+  plugins: [
+    new DashboardPlugin()
+  ],
+};
+```
+
+为了使`webpack-dashboard`生效还要更改一下`webpack`的启动方式，就是用`webpack-dashboard`模块命令替代原本的`webpack`或者`webpack-dev-server`的命令，并将原有的启动命令作为参数传给它。举个例子，假设原本的启动命令如下：
+
+```javascript
+// package.json
+{
+  ...
+  "scripts": {
+    "dev": "webpack-dev-server"
+  }
+}
+```
+
+加上`webpack-dashboard`后则变为：
+
+```javascript
+// package.json
+{
+  ...
+  "scripts": {
+    "dev": "webpack-dashboard -- webpack-dev-server"
+  }
+}
+```
+
+启动后的效果如图9-1所示。
+
+![image-20220227123357824](../image/image-20220227123357824.png)
+
+`webpack-dashboard`的控制台分为几个面板来展示不同方面的信息。比如左上角的`Log`面板就是`Webpack`本身的日志；下面的`Module`s面板则是此次参与打包的模块，从中我们可以看出哪些模块资源占用比较多；而从右下方的`Problems`面板中可以看到构建过程中的警告和错误等。
+
+### `webpack-merge`
+
+对于需要配置多种打包环境的项目来说，`webpack-merge`是一个非常实用的工具。假设我们的**项目有3种不同的配置，分别对应本地环境、测试环境和生产环境。**每一个环境对应的配置都不同，但也有一些公共的部分，那么我们就可以将这些公共的部分提取出来。假设我们创建一个`webpack.common.js`来存放所有这些配置，如下面例子所示：
+
+```javascript
+// webpack.common.js
+module.exports = {
+  entry: './app.js',
+  output: {
+    filename: '[name].js',
+  },
+  module: {
+    rules: [
+      {
+        test: /\.(png|jpg|gif)$/,
+        use: 'file-loader',
+      },
+      {
+        test: /\.css$/,
+        use: [
+          'style-loader',
+          'css-loader'
+        ],
+      }
+    ],
+  },
+```
+
+每一个环境又都有一个相应的配置文件，如对于生产环境可以专门创建一个`webpack.prod.js`。假如不借助任何工具，我们自己从`webpack.common.js`引入公共配置，则大概如下面所示：
+
+```javascript
+// webpack.prod.js
+const commonConfig = require('./webpack.common.js');
+module.exports = Object.assign(commonConfig, {
+  mode: 'production',
+});
+```
+
+这样看起来很简单，但问题是，假如我们想修改一下`CSS`的打包规则，例如用`extract-text-webpack-plugin`将样式单独打包出来应该怎么办呢？这时就需要添加一些代码，例如：
+
+```javascript
+// webpack.prod.js
+const commonConfig = require('./webpack.common.js');
+const ExtractTextPlugin = require('extract-text-webpack-plugin');
+
+module.exports = Object.assign(commonConfig, {
+  mode: 'production',
+  module: {
+    rules: [
+      {
+        test: /\.(png|jpg|gif)$/,
+        use: 'file-loader',
+      },
+      {
+        test: /\.css$/,
+        use: ExtractTextPlugin.extract({
+          fallback: 'style-loader',
+          use: 'css-loader',
+        }),
+      }
+    ],
+  },
+});
+```
+
+是不是一下子感觉有些冗余了呢？这是因为通过`Object.assign`我们没有办法准确找到`CSS`的规则并进行替换，所以必须替换掉整个`module`的配置。
+
+下面我们看一下如何用`webpack-merge`来解决这个问题。安装命令如下：
+
+```bash
+npm install webpack-merge
+```
+
+更改`webpack.prod.js`如下：
+
+```javascript
+const merge = require('webpack-merge');
+const commonConfig = require('./webpack.common.js');
+const ExtractTextPlugin = require('extract-text-webpack-plugin');
+
+module.exports = merge.smart(commonConfig, {
+  mode: 'production',
+  module: {
+    rules: [
+      {
+        test: /\.css$/,
+        use: ExtractTextPlugin.extract({
+          fallback: 'style-loader',
+          use: 'css-loader',
+        }),
+      }
+    ]
+  },
+});
+```
+
+可以看到，我们用`merge.smart`替换了`Object.assign`，这就是`webpack-merge`“聪明”的地方。它**在合并`module.rules`的过程中会以`test`属性作为标识符，当发现有相同项出现的时候会以后面的规则覆盖前面的规则**，这样我们就不必添加冗余代码了。
+除此之外，`webpack-merge`还提供了针对更加复杂场景的解决方案，这里不赘述，感兴趣的读者请查阅其[文档](https://github.com/survivejs/webpack-merge)。
+
+### `speed-measure-webpack-plugin`
+
+觉得`Webpack`构建很慢但又不清楚如何下手优化吗？那么可以试试`speed-measure-webpack-plugin`这个插件（简称`SMP`）。**`SMP`可以分析出`Webpack`整个打包过程中在各个`loader`和`plugin`上耗费的时间，这将会有助于找出构建过程中的性能瓶颈。**安装命令如下：
+
+```bash
+npm install speed-measure-webpack-plugin
+```
+
+**`SMP`的使用非常简单，只要用它的`wrap`方法包裹在`Webpack`的配置对象外面即可。**
+
+```javascript
+// webpack.config.js
+const SpeedMeasurePlugin = require('speed-measure-webpack-plugin');
+const smp = new SpeedMeasurePlugin();
+module.exports = smp.wrap({
+  entry: './app.js',
+  ...
+});
+```
+
+执行`Webpack`构建命令，将会输出`SMP`的时间测量结果，如图9-2所示。
+
+![image-20220227124534339](../image/image-20220227124534339.png)
+
+从上面的分析结果就可以找出哪些构建步骤耗时较长，以便于优化和反复测试。
+
+### `size-plugin`
+
+**一般而言，随着项目的开发，产出的资源会越来越大，最终生成的资源会逐渐变得臃肿起来。`size-plugin`这个插件可以帮助我们监控资源体积的变化，尽早地发现问题。**
+
+安装命令如下：
+
+```bash
+npm install size-plugin
+```
+
+`size-plugin`的配置同样很简单。
+
+```javascript
+const path = require('path');
+const SizePlugin = require('size-plugin');
+
+module.exports = {
+  entry: './app.js',
+  output: {
+    path: path.join(__dirname, 'dist'),
+    filename: '[name].js',
+  },
+  mode: 'production',
+  plugins: [
+    new SizePlugin(),
+  ],
+};
+```
+
+在每次执行`Webpack`打包命令后`，size-plugin`都会输出本次构建的资源体积（`gzip`过后），以及与上次构建相比体积变化了多少，如图9-3所示。
+
+![image-20220227124724811](../image/image-20220227124724811.png)
+
+该插件目前还不够完善，理想情况下它应该可以把这些结果以文件的形式输出出来，这样就便于我们在持续集成平台上对结果进行对比了。不过它还在快速完善中，也许未来会添加类似的功能。
+
+## 模块热替换
+
+在早期开发工具还比较简单和匮乏的年代，调试代码的方式基本都是改代码—刷新网页查看结果—再改代码，这样反复地修改和测试。后来，一些`Web`开发框架和工具提供了更便捷的方式——只要检测到代码改动就会自动重新构建，然后触发网页刷新。这种一般被称为`live reload`。`Webpack`则在`live reload`的基础上又进了一步，**可以让代码在网页不刷新的前提下得到最新的改动，我们甚至不需要重新发起请求就能看到更新后的效果。这就是模块热替换功能（`Hot Module Replacement，HMR`）。**
+
+`HMR`对于大型应用尤其适用。试想一个复杂的系统每改动一个地方都要经历资源重构建、网络请求、浏览器渲染等过程，怎么也要几秒甚至几十秒的时间才能完成；况且我们调试的页面可能位于很深的层级，每次还要通过一些人为操作才能验证结果，其效率是非常低下的。而**`HMR`则可以在保留页面当前状态的前提下呈现出最新的改动，可以节省开发者大量的时间成本。**
+
+### 开启`HMR`
+
+`HMR`是需要手动开启的，并且有一些必要条件。
+
+首先我们要**确保项目是基于`webpack-dev-server`或者`webpack-dev-middle`进行开发的，`Webpack`本身的命令行并不支持`HMR`。**下面是一个使用`webpack-dev-server`开启`HMR`的例子。
+
+```javascript
+const webpack = require('webpack');
+module.exports = {
+  // ...
+  plugins: [
+    new webpack.HotModuleReplacementPlugin()
+  ],
+  devServer: {
+    hot: true,
+  },
+};
+```
+
+上面**配置产生的结果是`Webpack`会为每个模块绑定一个`module.hot`对象，这个对象包含了`HMR`的`API`。借助这些`API`我们不仅可以实现对特定模块开启或关闭`HMR`，也可以添加热替换之外的逻辑。**比如，**当得知应用中某个模块更新了，为了保证更新后的代码能够正常工作，我们可能还要添加一些额外的处理。调用`HMR API`有两种方式，一种是手动地添加这部分代码；另一种是借助一些现成的工具，比如`react-hot-loader、vue-loader`等。**
+
+如果应用的逻辑比较简单，我们可以直接手动添加代码来开启`HMR`。比如下面这个例子：
+
+```javascript
+// index.js
+import { add } from 'util.js';
+add(2, 3);
+
+if (module.hot) {
+  module.hot.accept();
+}
+```
+
+假设`index.js`是应用的入口，那么我们就可以把调用`HMR API`的代码放在该入口中，这样`HMR`对于`index.js`和其依赖的所有模块都会生效。当发现有模块发生变动时，`HMR`会使应用在当前浏览器环境下重新执行一遍`index.js`（包括其依赖）的内容，但是页面本身不会刷新。
+
+大多数时候，还是建议应用的开发者使用第三方提供的`HMR`解决方案，因为`HMR`触发过程中可能会有很多预想不到的问题，导致模块更新后应用的表现和正常加载的表现不一致。为了解决这类问题，`Webpack`社区中已经有许多相应的工具提供了解决方案。比如`react`组件的热更新由`react-hot-loader`来处理，我们直接拿来用就行。
+
+### `HMR`原理
+
+**在开启`HMR`的状态下进行开发，你会发现资源的体积会比原本的大很多，这是因为`Webpack`为了实现`HMR`而注入了很多相关代码。**在它的实现过程里也包含了很多有意思的问题，下面我们来详细介绍一下`HMR`的工作原理。
+
+**在本地开发环境下，浏览器是客户端，`webpack-dev-server（WDS）`相当于是我们的服务端。`HMR`的核心就是客户端从服务端拉取更新后的资源（准确地说，`HMR`拉取的不是整个资源文件，而是`chunk diff`，即`chunk`需要更新的部分。关于`chunk`的概念请参考第3章）。**
+
+第1步就是**浏览器什么时候去拉取这些更新。这需要`WDS`对本地源文件进行监听。实际上`WDS`与浏览器之间维护了一个`websocket`，当本地资源发生变化时`WDS`会向浏览器推送更新事件，并带上这次构建的`hash`，让客户端与上一次资源进行比对。通过`hash`的比对可以防止冗余更新的出现。因为很多时候源文件的更改并不一定代表构建结果的更改（如添加了一个文件末尾空行等）。**`websocket`发送的事件列表如图9-4所示。
+
+![image-20220227130559740](../image/image-20220227130559740.png)
+
+这同时也解释了为什么当我们开启多个本地页面时，代码一改所有页面都会更新。当然**`webscoket`并不是只有开启了`HMR`才会有，`live reload`其实也是依赖这个而实现的。**
+
+**有了恰当的拉取资源的时机，下一步就是要知道拉取什么。这部分信息并没有包含在刚刚的`websocket`中，因为刚刚我们只是想知道这次构建的结果是不是和上次一样。现在客户端已经知道新的构建结果和当前的有了差别，就会向`WDS`发起一个请求来获取更改文件的列表，即哪些模块有了改动。通常这个请求的名字为`[hash].hot-update.json`。**
+
+图9-5、图9-6分别展示了该接口的请求地址和返回值。
+
+![image-20220227130725141](../image/image-20220227130725141.png)
+
+![image-20220227130800218](../image/image-20220227130800218.png)
+
+**该返回结果告诉客户端，需要更新的`chunk`为`main`，版本为（构建`hash`）`e388ea0f 0e0054e37cee`。这样客户端就可以再借助这些信息继续向`WDS`获取该`chunk`的增量更新。**
+
+图9-7、图9-8展示了一个获取增量更新接口的例子。
+
+![image-20220227130905023](../image/image-20220227130905023.png)
+
+![image-20220227130927946](../image/image-20220227130927946.png)
+
+**现在客户端已经获取到了`chunk`的更新，到这里又遇到了一个非常重要的问题，即客户端获取到这些增量更新之后如何处理？哪些状态需要保留，哪些又需要更新？这个就不属于`Webpack`的工作了，但是它提供了相关的`API`（如前面我们提到的`module.hot.accept`），开发者可以使用这些`API`针对自身场景进行处理。像`react-hot-loader和vue-loader`也都是借助这些`API`来实现的`HMR`。**
+
+### `HMR API`示例
+
+我们来看一个实际使用`HMR API`的例子。
+
+```javascript
+// index.js
+import { logToScreen } from './util.js';
+let counter = 0;
+console.log('setInteval starts');
+setInterval(() => {
+  counter += 1;
+  logToScreen(counter);
+}, 1000);
+
+// util.js
+export function logToScreen(content) {
+  document.body.innerHTML = `content: ${content}`;
+}
+```
+
+这个例子实现的是在屏幕上输出一个整数并每秒加1。现在我们要对它添加`HMR`应该怎么做呢？如果以最简单的方式来说的话即是添加如下代码：
+
+```javascript
+if (module.hot) {
+  module.hot.accept();
+}
+```
+
+前面已经提到，这段代码的意思是让`index.js`及其依赖只要发生改变就在当前环境下全部重新执行一遍。但是我们发现它会带来一个问题：在当前的运行时我们已经有了一个`setInterval`，而每次`HMR`过后又会添加新的`setInterval`，并没有对之前的进行清除，所以最后我们会看到屏幕上有不同的数字闪来闪去。从图9-9中的`console`信息可以看出`setInterval`确实执行了多次。
+
+![image-20220227131305992](../image/image-20220227131305992.png)
+
+为了避免这个问题，我们可以让`HMR`不对`index.js`生效。也就是说，当`index.js`发生改变时，就直接让整个页面刷新，以防止逻辑出现问题，但对于其他模块来说我们还想让`HMR`继续生效。那么可以将上面的代码修改如下：
+
+```javascript
+if (module.hot) {
+  module.hot.decline();
+  module.hot.accept(['./util.js']);
+}
+```
+
+`module.hot.decline`是将当前`index.js`的`HMR`关掉，当`index.js`自身发生改变时禁止使用`HMR`进行更新，只能刷新整个页面。而后面一句`module.hot.accept(['./util.js'])`的意思是当`util.js`改变时依然可以启用`HMR`更新。上面只是一个简单的例子，展示了如何针对不同模块进行`HMR`的处理。更多相关的`API`请参考`Webpack`文档。
+
+## 小结
+
+介绍了一些`Webpack`周边插件、如何使用`HMR`及其原理。
+
+# 十、更多`JavaScript`打包工具
+
+## `Rollup`
+
+如果用`Webpack`与`Rollup`进行比较的话，那么**`Webpack`的优势在于它更全面，基于“一切皆模块”的思想而衍生出丰富的`loader`和`plugin`可以满足各种使用场景；而`Rollup`则更像一把手术刀，它更专注于`JavaScript`的打包。**当然`Rollup`也支持许多其他类型的模块，但是总体而言在通用性上还是不如`Webpack`。如果当前的项目需求仅仅是打包`JavaScript`，比如一个`JavaScript`库，那么`Rollup`很多时候会是我们的第一选择。
+
+### 配置
+
+下面用一个简单的示例工程来看看`Rollup`是如何工作的。首先创建`Rollup`的配置文件`rollup.config.js`及我们打包的项目文件`app.js`。
+
+```javascript
+// rollup.config.js
+module.exports = {
+  input: 'src/app.js',
+  output: {
+    file: 'dist/bundle.js',
+    format: 'cjs',
+  },
+};
+
+// src/app.js
+console.log('My first rollup app.');
+```
+
+**与`Webpack`一般装在项目内部不同，`Rollup`直接全局安装即可。**
+
+```bash
+(sudo) npm i rollup -g
+```
+
+然后我们使用`Rollup`的命令行指令进行打包。
+
+```bash
+rollup -c rollup.config.js
+```
+
+`-c`参数是告`诉Rollup`使用该配置文件。打包结果如下：
+
+```javascript
+'use strict';
+console.log('My first rollup app.');
+```
+
+可以看到，我们**打包出来的东西很干净，`Rollup`并没有添加什么额外的代码**（就连第1行的`'use strict'`都可以通过配置`output.strict`去掉）。而对于同样的源代码，我们试试使用`Webpack`来打包，配置如下：
+
+```javascript
+// webpack.config.js
+module.exports = {
+  entry: './src/app.js',
+  output: {
+    filename: 'bundle.js',
+  },
+  mode: 'production',
+};
+```
+
+产出结果如下：
+
+```javascript
+!(function(e) {
+  var t = {};
+  function r(n) {
+    if (t[n]) return t[n].exports;
+    var o = (t[n] = { i: n, l: !1, exports: {}, });
+    return e[n].call(o.exports, o, o.exports, r), (o.l = !0), o.exports;
+  }
+  // 此处省略了50行 Webpack 自身代码...
+})([
+  function(e, t) {
+    console.log('My first rollup app.');
+  }
+]);
+```
+
+可以看到，即便我们的项目本身仅仅有一行代码，`Webpack`也需要将自身代码注入进去（大概50行左右）。显然**`Rollup`的产出更符合我们的预期，不包含无关代码，资源体积更小。**
+
+### `tree shaking`
+
+在前面`Webpack`的章节中已经介绍过`tree shaking`，而**实际上`tree shaking`这个特性最开始是由`Rollup`实现的，而后被`Webpack`借鉴了过去。**
+
+**`Rollup`的`tree shaking`也是基于对`ES6 Modules`的静态分析，找出没有被引用过的模块，将其从最后生成的`bundle`中排除。**下面我们对之前的例子稍加改动以验证这一功能。
+
+```javascript
+// app.js
+import { add } from './util';
+console.log(`2 + 3 = ${add(2, 3)}`);
+
+// util.js
+export function add(a, b) {
+  return a + b;
+}
+export function sub(a, b) {
+  return a - b;
+}
+```
+
+`Rollup`的打包结果如下：
+
+```javascript
+'use strict';
+
+function add(a, b) {
+  return a + b;
+}
+
+console.log(`2 + 3 = ${add(2, 3)}`);
+```
+
+可以看到，`util.js`中的`sub`函数没有被引用过，因此也没有出现在最终的`bundle.js`中。与之前一样，输出的内容非常清晰简洁，没有附加代码。
+
+### 可选的输出格式
+
+**`Rollup`有一项`Webpack`不具备的特性，即通过配置`output.format`开发者可以选择输出资源的模块形式。**上面例子中我们使用的是`cjs（CommonJS）`，除此之外`Rollup`还支持`amd、esm、iife、umd及system`。这项特性对于打包`JavaScript`库特别有用，因为往往一个库需要支持多种不同的模块形式，而通过`Rollup`几个命令就可以把一份源代码打包为多份。下面使用一段简单的代码进行举例。
+
+```javascript
+'use strict';
+export function add(a, b) {
+  return a + b;
+}
+export function sub(a, b) {
+  return a - b;
+}
+```
+
+当`output.format`是`cjs（CommonJS）`时，输出如下：
+
+```javascript
+Object.defineProperty(exports, '__esModule', { value: true });
+function add(a, b) {
+  return a + b;
+}
+function sub(a, b) {
+  return a - b;
+}
+exports.add = add;
+exports.sub = sub;
+```
+
+当`output.format`是`esm（ES6 Modules）`时，输出如下：
+
+```javascript
+function add(a, b) {
+  return a + b;
+}
+function sub(a, b) {
+  return a - b;
+}
+export { add, sub };
+```
+
+### 使用`Rollup`构建`JavaScript`库
+
+在实际应用中，`Rollup`经常被用于打包一些库或框架（比如`React和Vue`）。在`React`团队的一篇博文中曾提到，他们将`React`原有的打包工具从`Browserify`迁移到了`Rollup`，并从中获取到了以下几项收益：
+
+* 最低限度的附加代码；
+* 对`ES6 Module`的良好支持；
+* 通过`tree shaking`去除开发环境代码；
+* 通过自定义插件来实现`React`一些特殊的打包逻辑。
+
+**`Rollup`在设计之初就主要偏向于`JavaScript`库的构建，以至于它没有`Webpack`对于应用开发那样强大的支持（各种`loader和plugin、HMR`等）**，所以我们在使用`Rollup`进行这类项目开发前还是要进行仔细斟酌。
+
+## `Parcel`
+
+`Parcel`在`JavaScript`打包工具中属于相对后来者（根据`npm`上的数据，`Parcel`最早的版本上传于2017年8月，`Webpack和Rollup`则分别是2012年3月和2015年5月）。在`Parcel`官网的`Benchmark`测试中，在有缓存的情况下其打包速度要比`Webpack`快将近8倍，且宣称自己是零配置的。它的出现正好契合了当时开发者们对于`Webpack`打包速度慢和配置复杂的抱怨，从而吸引了众多用户。下面我们来深入了解一下`Parcel`的这些特性。
+
+### 打包速度
+
+`Parcel`在打包速度的优化上主要做了3件事：
+
+* **利用`worker`来并行执行任务；**
+* **文件系统缓存；**
+* **资源编译处理流程优化。**
+
+上面3种方法中的前两个`Webpack`已经在做了。比如`Webpack`在资源压缩时可以利用多核同时压缩多个资源（但是在资源编译过程中还没实现）；本地缓存则更多的是在`loader`的层面，像`babel-loader`就会把编译结果缓存在项目中的一个隐藏目录下，并通过本地文件的修改时间和状态来判断是否使用上次编译的缓存。下面我们来着重说一下第3点，也就是对资源编译处理流程的优化。
+
+我们知道，`Webpack`本身只认识`JavaScript`模块，它主要是靠`loader`来处理各种不同类型的资源。在第4章对于`loader`的介绍中我们提到过，`loader`本质上就是一个函数，一般情况下它的输入和输出都是字符串。比如，对于`babel-loader`来说，它的输入是`ES6+`的内容，`babel-loader`会进行语法转换，最后输出为`ES5`的形式。
+
+如果我们更细致地分析`babel-loader`的工作流程，大体可以分为以下几步：
+
+* 将`ES6`形式的字符串内容解析为`AST`（`abstract syntax tree`，抽象语法树）；
+* 对`AST`进行语法转换；
+* 生成`ES5`代码，并作为字符串返回。
+
+这就是一个很正常的资源处理的过程。但假如是多个`loader`依次对资源进行处理呢？比如说在`babel-loader`的后面我们又添加了两个`loader`来处理另外一些特殊语法。整体的`JavaScript`编译流程如图10-1所示。
+
+![image-20220227133316109](../image/image-20220227133316109.png)
+
+从中我们可以看到，其中涉及大量的`String和AST`之间的转换，这主要是因为`loader`在设计的时候就只能接受和返回字符串，不同的`loader`之间并不需要知道彼此的存在，只要完成好各自的工作就可以了。虽然会产生一些冗余的步骤，但是这有助于保持`loader`的独立性和可维护性。
+
+`Parcel`并没有明确地暴露出一个`loader`的概念，其资源处理流程不像`Webpack`一样可以对`loader`随意组合，但也正因为这样它不需要那么多`String`与`AST`的转换操作。`Parcel`的资源处理流程可以理解为如图10-2所示。
+
+![image-20220227133440329](../image/image-20220227133440329.png)
+
+可以看到，**`Parcel`里面资源处理的步骤少多了，这主要得益于在它在不同的编译处理流程之间可以用`AST`作为输入输出。对于单个的每一步来说，如果前面已经解析过`AST`，那么直接使用上一步解析和转换好的`AST`就可以了，只在最后一步输出的时候再将`AST`转回`String`即可。**试想一下，对于一些规模比较庞大的工程来说，解析`AST`是个十分耗时的工作，能将其优化为只执行一次则会节省很多时间。
+
+### 零配置
+
+接着我们看看`Parcel`的另一个特性——零配置。下面是一个完全不需要任何配置的例子：
+
+```javascript
+<!-- index.html -->
+<html>
+<body>
+  <script src="./index.js"></script>
+</body>
+</html>
+
+// index.js
+document.write('hello world');
+```
+
+执行`Parcel`打包（和`Rollup`类似，`Parcel`也使用`npm`全局安装）。
+
+```bash
+parcel index.html
+```
+
+这样就启动了`Parcel`的开发模式，使用浏览器打开`localhost：1234`即可观察到效果。
+如果要打包为文件，则执行以下命令：
+
+```bash
+parcel build index.html
+```
+
+`Parcel`会创建一个`dist`目录，并在其中生成打包压缩后的资源，如图10-3所示。
+
+![image-20220227133854782](../image/image-20220227133854782.png)
+
+从上面可以看出和`Webpack`的一些不同之处。首先，`Parcel`是可以用`HTML`文件作为项目入口的，从`HTML`开始再进一步寻找其依赖的资源；并且可以发现对于最后产出的资源，`Parcel`已经自动为其生成了`hash`版本号及`source map`。另外，如果打开产出的`JS`文件会发现，内容都是压缩过的，而此时我们还没有添加任何配置或者命令行参数。可见在项目初始化的一些配置上`Parcel`确实比`Webpack`简洁很多。
+
+然而话说回来，对于一个正常`Web`项目来说，没有任何配置是几乎不可能的，因为如果完全没有配置也就失去了定制性。虽然`Parcel`并没有属于自己的配置文件，但本质上它是把配置进行了切分，交给`Babel、PostHTML和PostCSS`等一些特定的工具进行分别管理。比如当项目中有`.babelrc`时，那么`Parcel`打包时就会采用它作为`ES6`代码解析的配置。
+
+另外，`Parcel`提供了多种不同类型工程的快速配置方法。举个例子，在使用`Webpack`时，假如我们要使用`Vue`则必然会需要`vue-loader`。但是使用`Parcel`的话并不需要手动安装这样一个特殊的工具模块来对`.vue`文件进行处理。在一个`Parcel`工程中要使用`Vue`则只需安装`Vue`本身及`parcel-bundler`即可，如下面所示：
+
+```bash
+npm install --save vue
+npm install --save-dev parcel-bundler
+```
+
+这样就可以了，并不需要进行更多的配置。`Parcel`已经帮我们处理好后面的工作，看上去是不是很简单、直接呢？
+
+`Parcel`相比`Webpack`的优势在于快和灵巧。假如我们需要在很短的时间内搭建一个原型，或者不需要进行深度定制的工程，那么使用`Parcel`的话前期开发速度会很快。以前即便做一个小工程使用`Webpack`也要先写一堆配置，现在我们多了另外一种选择。
+
+## 打包工具的发展趋势
+
+除了上面介绍的`Rollup和Parcel`以外，`JavaScript`社区中还有许多打包工具（如`FuseBox、Microbundle、Pax`等，限于它们相对比较小众，这里不做过多介绍）。我们不妨对所有这些进行一个总览，来总结一下近年来`JavaScript`打包工具的发展趋势。
+
+### 性能与通用性
+
+**无论什么时候性能都是我们关注一个打包工具的重要指标，但是性能与通用性有时是一对互相制衡的指标。若一个工具通用性特别强，可以适用在各种场景，那么它往往无法针对某一种场景做到极致，必然会有一些取舍，性能上可能就不如那些更加专注于某一个小的领域的工具。**
+
+比如，`Parcel`利用`Worker`来进行多核编译的特性，`Webpack`在这方面就落后了不少。不是`Webpack`不想加，而是它本身的体量比`Parcel`大得多，要很好地支持并不容易。鉴于现在`Webpack`社区的繁荣，其实它在通用性上已经做得很好了。因此现在对于新出现的工具的趋势是，专注在某一特定领域，比`Webpack`做得更好更精，性能更强。我们在进行技术选型时也要看当前项目的需求，在通用性与性能之间做一些权衡和取舍。
+
+### 配置极小化与工程标准化
+
+**对于所有的`JavaScript`打包工具来说，配置极小化甚至是零配置逐渐成为了一个重要的特性。**`Parcel`的出现让开发者们意识到，打包工具不一定非要写一大堆配置，很多东西其实是可以被简化的。于是一系列打包工具都开始往这方面进行改进，以简洁的配置作为卖点。`Parcel`出现不久后就连`Webpack`也在4.0的版本中宣称自己支持零配置。
+
+在配置极小化的背后体现出来的其实是`JavaScript`工程的标准化。最简单的就是源码目录和产出资源目录。以前大家可能没有太多这方面的意识，都是随意地组织目录和进行命名，因此到了打包工具这边每个项目的配置都不太一样。而现在，越来越多的工程都开始趋同，比如用`src`作为源码目录，以`dist`作为资源输出目录。当它成为一种约定俗成的东西之后其实就不要特别的配置了，作为构建时默认的项目就好了。
+
+类似的还有很多工程配置，如代码压缩、特定类型的资源编译处理等。经过大家一段时间的实践，社区中已经基本形成了一套可以面向大多数场景的解决方案，并不需要特别个性化的东西，现有方案拿来即用。在前两年的`JavaScript`社区发展中，各种工具和库层出不穷，处于一个爆炸式膨胀的状态。但随着一些东西逐渐成熟，经过了一些打磨和沉淀，一些共识也逐渐被大家接纳和采用，这对于整个社区的发展其实是一个好事。
+
+### `WebAssembly`
+
+**`WebAssembly`是一项近年来快速发展的技术，它的主要特性是性能可以媲美于原生，另外像`C`和`Java`等语言都可以编译为`WebAssembly`在现代浏览器上运行。因此在游戏、图像识别等计算密集型领域中，`WebAssembly`拥有很广阔的发展前景。**
+
+目前，不管你使用`Webpack、Rollup还是Parcel`，均能找到对`WebAssembly`的支持。比如我们可以这样使用以下`.wasm`的模块：
+
+```javascript
+import { add } from './util.wasm';
+add(2, 3);
+```
+
+试想一下，假如我们的`loader`及同类的编译工具足够强大，是否甚至也可以直接引用一个其他语言的模块呢？你可以引用一段`C`语言的代码或者`Rust`的代码，然后让它们运行在我们的浏览器环境中。这看起来很不可思议，但其实并没有我们想象的那么遥不可及。
+
+## 小结
+
+主要介绍了`JavaScript`社区中除`Webpack`以外比较主流的打包工具。
+
+1. `Rollup`更加专注于`JavaScript`的打包，它自身附加的代码更少，具备`tree shaking`，且可以输出多种形式的模块。
+2. `Parcel`在资源处理流程上做了改进，以追求更快的打包速度。同时其零配置的特性可以减少很多项目开发中花费在环境搭建上面的成本。
+
+在进行技术选型的时候，我们不仅要结合目前工具的一些特性，也要看其未来的发展路线图。如果其能在后续保持良好的社区生态及维护状况，对于项目今后的发展也是非常有利的。
